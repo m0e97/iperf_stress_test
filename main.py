@@ -26,7 +26,15 @@ DEFAULT_DELAY_SECONDS = 120
 THROUGHPUT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGTP]?bits/sec)", re.IGNORECASE)
 ROLE_PATTERN = re.compile(r"\b(sender|receiver)\b", re.IGNORECASE)
 NUMBER_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+FIREWALL_NAME_PATTERNS = [
+    re.compile(r"^\s*hostname\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*system\s+name\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*sysname\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
+    re.compile(r"^\s*device\s+name\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
+]
 NAME_ALIASES = {"name", "site", "site_name", "spoke", "spoke_name", "branch"}
+DISCOVERED_NAME_KEYS = NAME_ALIASES | {"firewall_name", "hostname", "device_name"}
 IP_ALIASES = {"ip", "host", "address", "spoke_ip", "branch_ip", "wan_ip"}
 SPEED_ALIASES = {
     "speed",
@@ -83,6 +91,7 @@ class SiteRun:
     started_at: datetime
     ended_at: datetime
     command_results: list[CommandResult] = field(default_factory=list)
+    name_discovery_result: CommandResult | None = None
     delayed_after_seconds: int = 0
 
     @property
@@ -283,8 +292,10 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
                 continue
             placeholders[sanitized] = value
 
-        display_name = find_first_value(placeholders, NAME_ALIASES) or f"spoke-{index}"
         ip_address = find_first_value(placeholders, IP_ALIASES)
+        display_name = ip_address or f"spoke-{index}"
+        for key in DISCOVERED_NAME_KEYS:
+            placeholders[key] = display_name
         speed = find_first_value(placeholders, SPEED_ALIASES)
         speed_mbps = parse_speed_to_mbps(speed)
         speed_with_margin_mbps = round(speed_mbps * 1.15, 2) if speed_mbps is not None else None
@@ -368,6 +379,56 @@ def extract_throughput(output: str) -> tuple[float | None, str | None]:
     return throughput_mbps, label
 
 
+def clean_firewall_name(value: str) -> str | None:
+    cleaned = ANSI_ESCAPE_PATTERN.sub("", value).strip().strip("'\"")
+    cleaned = re.sub(r"\s*[>#]\s*$", "", cleaned).strip()
+    if not cleaned:
+        return None
+
+    lowered = cleaned.lower()
+    ignored_prefixes = (
+        "warning:",
+        "the authenticity of host",
+        "permanently added",
+        "pseudo-terminal",
+        "last login",
+        "welcome",
+        "ssh:",
+        "connection ",
+        "permission denied",
+        "command not found",
+        "bash:",
+        "zsh:",
+    )
+    if any(lowered.startswith(prefix) for prefix in ignored_prefixes):
+        return None
+    if len(cleaned) > 128:
+        return None
+    return cleaned
+
+
+def parse_firewall_name(output: str) -> str | None:
+    lines = [ANSI_ESCAPE_PATTERN.sub("", line).strip() for line in output.splitlines()]
+    non_empty_lines = [line for line in lines if line]
+
+    for line in non_empty_lines:
+        for pattern in FIREWALL_NAME_PATTERNS:
+            match = pattern.match(line)
+            if match:
+                candidate = clean_firewall_name(match.group("name"))
+                if candidate:
+                    return candidate
+
+    if len(non_empty_lines) == 1:
+        return clean_firewall_name(non_empty_lines[0])
+
+    for line in non_empty_lines:
+        candidate = clean_firewall_name(line)
+        if candidate and re.fullmatch(r"[A-Za-z0-9_.:-]+", candidate):
+            return candidate
+    return None
+
+
 def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResult:
     started_at = datetime.now()
     if dry_run:
@@ -405,12 +466,21 @@ def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResu
     )
 
 
+def set_site_display_name(site: SiteDefinition, display_name: str) -> None:
+    site.display_name = display_name
+    for key in DISCOVERED_NAME_KEYS:
+        site.placeholders[key] = display_name
+
+
 def render_command(template: str, site: SiteDefinition) -> str:
     values = SafeFormatDict(site.placeholders.copy())
     values.setdefault("site_index", str(site.index))
     values.setdefault("spoke_name", site.display_name)
     values.setdefault("site_name", site.display_name)
     values.setdefault("name", site.display_name)
+    values.setdefault("firewall_name", site.display_name)
+    values.setdefault("hostname", site.display_name)
+    values.setdefault("device_name", site.display_name)
     values.setdefault("spoke_ip", site.ip_address)
     values.setdefault("ip", site.ip_address)
     values.setdefault("speed", site.speed)
@@ -425,11 +495,65 @@ def render_command(template: str, site: SiteDefinition) -> str:
     return template.format_map(values)
 
 
+def discover_firewall_name(
+    site: SiteDefinition,
+    command_template: str,
+    timeout: int | None,
+    dry_run: bool,
+) -> tuple[CommandResult, str | None]:
+    started_at = datetime.now()
+    try:
+        command = render_command(command_template, site)
+    except KeyError as error:
+        ended_at = datetime.now()
+        return (
+            CommandResult(
+                template=command_template,
+                command="",
+                started_at=started_at,
+                ended_at=ended_at,
+                return_code=None,
+                stdout="",
+                stderr="",
+                error=f"Missing placeholder value for '{error.args[0]}'",
+            ),
+            None,
+        )
+
+    try:
+        result = run_command(command, timeout=timeout, dry_run=dry_run)
+    except subprocess.TimeoutExpired as error:
+        ended_at = datetime.now()
+        return (
+            CommandResult(
+                template=command_template,
+                command=command,
+                started_at=started_at,
+                ended_at=ended_at,
+                return_code=None,
+                stdout=error.stdout or "",
+                stderr=error.stderr or "",
+                error=f"Timed out after {error.timeout} seconds",
+            ),
+            None,
+        )
+
+    result.template = command_template
+    if dry_run:
+        return result, None
+
+    discovered_name = parse_firewall_name(result.stdout)
+    if discovered_name is None and result.return_code == 0:
+        discovered_name = parse_firewall_name(result.stderr)
+    return result, discovered_name
+
+
 def run_site(
     site: SiteDefinition,
     command_templates: list[str],
     timeout: int | None,
     dry_run: bool,
+    name_discovery_result: CommandResult | None = None,
 ) -> SiteRun:
     started_at = datetime.now()
     results: list[CommandResult] = []
@@ -475,7 +599,13 @@ def run_site(
         results.append(result)
 
     ended_at = datetime.now()
-    return SiteRun(site=site, started_at=started_at, ended_at=ended_at, command_results=results)
+    return SiteRun(
+        site=site,
+        started_at=started_at,
+        ended_at=ended_at,
+        command_results=results,
+        name_discovery_result=name_discovery_result,
+    )
 
 
 def summarize(results: list[SiteRun]) -> dict[str, Any]:
@@ -552,6 +682,35 @@ def build_html_report(
         )
 
         command_blocks: list[str] = []
+        if site_run.name_discovery_result is not None:
+            result = site_run.name_discovery_result
+            discovery_output = "\n".join(
+                section
+                for section in [
+                    f"STDOUT:\n{result.stdout.strip()}" if result.stdout.strip() else "",
+                    f"STDERR:\n{result.stderr.strip()}" if result.stderr.strip() else "",
+                    f"ERROR:\n{result.error}" if result.error else "",
+                ]
+                if section
+            ) or "No output captured."
+
+            command_blocks.append(
+                """
+                <div class="command-block">
+                  <div><strong>Firewall Name Discovery:</strong> <code>{command}</code></div>
+                  <div><strong>Status:</strong> <span class="{status_class}">{status}</span></div>
+                  <div><strong>Return Code:</strong> {return_code}</div>
+                  <pre>{output}</pre>
+                </div>
+                """.format(
+                    command=html.escape(result.command or "N/A"),
+                    status=html.escape(result.status),
+                    status_class=html.escape(result.status),
+                    return_code=html.escape(str(result.return_code) if result.return_code is not None else "N/A"),
+                    output=html.escape(discovery_output),
+                )
+            )
+
         for result in site_run.command_results:
             output_text = "\n".join(
                 section
@@ -740,7 +899,7 @@ def build_html_report(
         <thead>
           <tr>
             <th>#</th>
-            <th>Spoke</th>
+            <th>Firewall</th>
             <th>IP</th>
             <th>Speed</th>
             <th>Test Bandwidth</th>
@@ -774,12 +933,28 @@ def build_argument_parser() -> argparse.ArgumentParser:
         action="append",
         help=(
             "Command template to run for each site. Useful placeholders include "
-            "{spoke_name}, {spoke_ip}, {speed}, {speed_with_margin}, {speed_with_margin_mbps}."
+            "{firewall_name}, {spoke_name}, {spoke_ip}, {speed}, "
+            "{speed_with_margin}, {speed_with_margin_mbps}."
         ),
     )
     parser.add_argument(
         "--command-file",
         help="Text file containing one command template per line. Blank lines and lines starting with # are ignored.",
+    )
+    parser.add_argument(
+        "--firewall-name-command",
+        default='ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {spoke_ip} "get system status"',
+        help=(
+            "SSH command template used to discover the firewall name before each test. "
+            "The output may contain a line like 'Hostname: FW-01' or just the hostname. "
+            "Default: %(default)s"
+        ),
+    )
+    parser.add_argument(
+        "--firewall-name-timeout",
+        type=int,
+        default=30,
+        help="Timeout in seconds for firewall name discovery. Default: 30.",
     )
     parser.add_argument(
         "--delay-seconds",
@@ -818,6 +993,8 @@ def main() -> int:
 
     if args.delay_seconds < 0:
         parser.error("--delay-seconds must be 0 or greater.")
+    if args.firewall_name_timeout < 1:
+        parser.error("--firewall-name-timeout must be 1 or greater.")
 
     rows = load_rows(input_path, args.sheet)
     if not rows:
@@ -832,6 +1009,9 @@ def main() -> int:
             "spoke_name",
             "site_name",
             "name",
+            "firewall_name",
+            "hostname",
+            "device_name",
             "spoke_ip",
             "ip",
             "speed",
@@ -843,13 +1023,32 @@ def main() -> int:
         }
     )
     validate_template_fields(command_templates, available_placeholders)
+    validate_template_fields([args.firewall_name_command], available_placeholders)
 
     runs: list[SiteRun] = []
     total_sites = len(sites)
 
     for index, site in enumerate(sites, start=1):
+        print(f"[{index}/{total_sites}] Discovering firewall name ({site.ip_address or 'no-ip'})")
+        name_result, discovered_name = discover_firewall_name(
+            site,
+            args.firewall_name_command,
+            timeout=args.firewall_name_timeout,
+            dry_run=args.dry_run,
+        )
+        if discovered_name:
+            set_site_display_name(site, discovered_name)
+        elif not args.dry_run:
+            print(f"  Could not discover firewall name; using fallback '{site.display_name}'.")
+
         print(f"[{index}/{total_sites}] Running site '{site.display_name}' ({site.ip_address or 'no-ip'})")
-        site_run = run_site(site, command_templates, timeout=args.timeout, dry_run=args.dry_run)
+        site_run = run_site(
+            site,
+            command_templates,
+            timeout=args.timeout,
+            dry_run=args.dry_run,
+            name_discovery_result=name_result,
+        )
         runs.append(site_run)
 
         if index < total_sites and args.delay_seconds:

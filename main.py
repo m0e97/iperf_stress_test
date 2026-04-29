@@ -23,6 +23,21 @@ NS = {
 }
 
 DEFAULT_DELAY_SECONDS = 120
+DEFAULT_TRAFFICTEST_PORT = "5201"
+DEFAULT_HUB_SERVER_INTF = "Mobily"
+DEFAULT_SPOKE_CLIENT_INTF = "wan1"
+DEFAULT_HUB_SERVER_START_DELAY_SECONDS = 2.0
+DEFAULT_SSH_TEMPLATE = 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {target} "{remote_command}"'
+FORTIGATE_HUB_SETUP_COMMANDS = [
+    "diagnose traffictest server-intf {hub_server_intf}",
+    "diagnose traffictest port {traffictest_port}",
+]
+FORTIGATE_HUB_SERVER_COMMAND = "diagnose traffictest run -s"
+FORTIGATE_SPOKE_COMMANDS = [
+    "diagnose traffictest client-intf {spoke_client_intf}",
+    "diagnose traffictest port {traffictest_port}",
+    "diagnose traffictest run -b {speed_with_margin} -c {hub_ip}",
+]
 THROUGHPUT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGTP]?bits/sec)", re.IGNORECASE)
 ROLE_PATTERN = re.compile(r"\b(sender|receiver)\b", re.IGNORECASE)
 NUMBER_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
@@ -36,6 +51,7 @@ FIREWALL_NAME_PATTERNS = [
 NAME_ALIASES = {"name", "site", "site_name", "spoke", "spoke_name", "branch"}
 DISCOVERED_NAME_KEYS = NAME_ALIASES | {"firewall_name", "hostname", "device_name"}
 IP_ALIASES = {"ip", "host", "address", "spoke_ip", "branch_ip", "wan_ip"}
+HUB_IP_ALIASES = {"hub_ip", "hub", "hub_host", "hub_address", "hub_wan_ip"}
 SPEED_ALIASES = {
     "speed",
     "rate",
@@ -53,6 +69,7 @@ class SiteDefinition:
     placeholders: dict[str, str]
     display_name: str
     ip_address: str
+    hub_ip: str
     speed: str
     speed_mbps: float | None
     speed_with_margin_mbps: float | None
@@ -293,9 +310,13 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
             placeholders[sanitized] = value
 
         ip_address = find_first_value(placeholders, IP_ALIASES)
+        hub_ip = find_first_value(placeholders, HUB_IP_ALIASES)
         display_name = ip_address or f"spoke-{index}"
         for key in DISCOVERED_NAME_KEYS:
             placeholders[key] = display_name
+        if hub_ip:
+            placeholders.setdefault("hub_ip", hub_ip)
+            placeholders.setdefault("hub", hub_ip)
         speed = find_first_value(placeholders, SPEED_ALIASES)
         speed_mbps = parse_speed_to_mbps(speed)
         speed_with_margin_mbps = round(speed_mbps * 1.15, 2) if speed_mbps is not None else None
@@ -316,6 +337,7 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
                 placeholders=placeholders,
                 display_name=display_name,
                 ip_address=ip_address,
+                hub_ip=hub_ip,
                 speed=speed,
                 speed_mbps=speed_mbps,
                 speed_with_margin_mbps=speed_with_margin_mbps,
@@ -336,9 +358,11 @@ def load_command_templates(args: argparse.Namespace) -> list[str]:
                 if line.strip() and not line.lstrip().startswith("#")
             )
     templates = [template for template in templates if template]
-    if not templates:
-        raise ValueError("Provide at least one command with --command or --command-file.")
     return templates
+
+
+def fortigate_traffictest_templates() -> list[str]:
+    return FORTIGATE_HUB_SETUP_COMMANDS + [FORTIGATE_HUB_SERVER_COMMAND] + FORTIGATE_SPOKE_COMMANDS
 
 
 def validate_template_fields(templates: list[str], available_keys: set[str]) -> None:
@@ -466,13 +490,138 @@ def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResu
     )
 
 
+def build_ssh_command(
+    site: SiteDefinition,
+    ssh_template: str,
+    target: str,
+    remote_template: str,
+) -> tuple[str, str]:
+    remote_command = render_template(remote_template, site)
+    command = render_template(
+        ssh_template,
+        site,
+        {"target": target, "remote_command": remote_command},
+    )
+    return remote_template, command
+
+
+def run_rendered_command(
+    template: str,
+    command: str,
+    timeout: int | None,
+    dry_run: bool,
+) -> CommandResult:
+    try:
+        result = run_command(command, timeout=timeout, dry_run=dry_run)
+    except subprocess.TimeoutExpired as error:
+        ended_at = datetime.now()
+        return CommandResult(
+            template=template,
+            command=command,
+            started_at=ended_at,
+            ended_at=ended_at,
+            return_code=None,
+            stdout=error.stdout or "",
+            stderr=error.stderr or "",
+            error=f"Timed out after {error.timeout} seconds",
+        )
+
+    result.template = template
+    return result
+
+
+def start_background_command(
+    template: str,
+    command: str,
+    dry_run: bool,
+) -> tuple[CommandResult, subprocess.Popen[str] | None]:
+    started_at = datetime.now()
+    if dry_run:
+        return (
+            CommandResult(
+                template=template,
+                command=command,
+                started_at=started_at,
+                ended_at=datetime.now(),
+                return_code=0,
+                stdout="dry-run: background command not executed",
+                stderr="",
+            ),
+            None,
+        )
+
+    process = subprocess.Popen(
+        command,
+        shell=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return (
+        CommandResult(
+            template=template,
+            command=command,
+            started_at=started_at,
+            ended_at=started_at,
+            return_code=None,
+            stdout="Hub server command started in the background.",
+            stderr="",
+        ),
+        process,
+    )
+
+
+def finalize_background_command(
+    initial_result: CommandResult,
+    process: subprocess.Popen[str],
+    stop_if_running: bool,
+) -> CommandResult:
+    stopped_after_test = False
+    if process.poll() is None and stop_if_running:
+        process.terminate()
+        stopped_after_test = True
+
+    try:
+        stdout, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate()
+        stopped_after_test = True
+
+    ended_at = datetime.now()
+    return_code = 0 if stopped_after_test else process.returncode
+    if stopped_after_test:
+        stdout = "\n".join(
+            part
+            for part in [
+                stdout.strip(),
+                "Hub server process stopped after spoke traffictest commands.",
+            ]
+            if part
+        )
+
+    combined_output = "\n".join(part for part in [stdout, stderr] if part)
+    throughput_mbps, throughput_label = extract_throughput(combined_output)
+    return CommandResult(
+        template=initial_result.template,
+        command=initial_result.command,
+        started_at=initial_result.started_at,
+        ended_at=ended_at,
+        return_code=return_code,
+        stdout=stdout,
+        stderr=stderr,
+        throughput_mbps=throughput_mbps,
+        throughput_label=throughput_label,
+    )
+
+
 def set_site_display_name(site: SiteDefinition, display_name: str) -> None:
     site.display_name = display_name
     for key in DISCOVERED_NAME_KEYS:
         site.placeholders[key] = display_name
 
 
-def render_command(template: str, site: SiteDefinition) -> str:
+def build_template_values(site: SiteDefinition, extra_values: dict[str, str] | None = None) -> SafeFormatDict:
     values = SafeFormatDict(site.placeholders.copy())
     values.setdefault("site_index", str(site.index))
     values.setdefault("spoke_name", site.display_name)
@@ -483,6 +632,8 @@ def render_command(template: str, site: SiteDefinition) -> str:
     values.setdefault("device_name", site.display_name)
     values.setdefault("spoke_ip", site.ip_address)
     values.setdefault("ip", site.ip_address)
+    values.setdefault("hub_ip", site.hub_ip)
+    values.setdefault("hub", site.hub_ip)
     values.setdefault("speed", site.speed)
     values.setdefault("expected_speed", site.speed)
     values.setdefault("speed_mbps", f"{site.speed_mbps:g}" if site.speed_mbps is not None else "")
@@ -492,7 +643,21 @@ def render_command(template: str, site: SiteDefinition) -> str:
     )
     values.setdefault("speed_with_margin", site.speed_with_margin_label)
     values.setdefault("bandwidth_with_margin", site.speed_with_margin_label)
-    return template.format_map(values)
+    if extra_values:
+        values.update(extra_values)
+    return values
+
+
+def render_template(
+    template: str,
+    site: SiteDefinition,
+    extra_values: dict[str, str] | None = None,
+) -> str:
+    return template.format_map(build_template_values(site, extra_values))
+
+
+def render_command(template: str, site: SiteDefinition) -> str:
+    return render_template(template, site)
 
 
 def discover_firewall_name(
@@ -608,6 +773,106 @@ def run_site(
     )
 
 
+def run_fortigate_traffictest_site(
+    site: SiteDefinition,
+    args: argparse.Namespace,
+    name_discovery_result: CommandResult | None = None,
+) -> SiteRun:
+    started_at = datetime.now()
+    results: list[CommandResult] = []
+    hub_server_process: subprocess.Popen[str] | None = None
+    hub_server_result_index: int | None = None
+
+    for remote_template in FORTIGATE_HUB_SETUP_COMMANDS:
+        try:
+            template, command = build_ssh_command(site, args.ssh_template, site.hub_ip, remote_template)
+        except KeyError as error:
+            ended_at = datetime.now()
+            results.append(
+                CommandResult(
+                    template=remote_template,
+                    command="",
+                    started_at=ended_at,
+                    ended_at=ended_at,
+                    return_code=None,
+                    stdout="",
+                    stderr="",
+                    error=f"Missing placeholder value for '{error.args[0]}'",
+                )
+            )
+            continue
+
+        results.append(run_rendered_command(template, command, timeout=args.timeout, dry_run=args.dry_run))
+
+    try:
+        template, command = build_ssh_command(site, args.ssh_template, site.hub_ip, FORTIGATE_HUB_SERVER_COMMAND)
+    except KeyError as error:
+        ended_at = datetime.now()
+        results.append(
+            CommandResult(
+                template=FORTIGATE_HUB_SERVER_COMMAND,
+                command="",
+                started_at=ended_at,
+                ended_at=ended_at,
+                return_code=None,
+                stdout="",
+                stderr="",
+                error=f"Missing placeholder value for '{error.args[0]}'",
+            )
+        )
+    else:
+        initial_result, hub_server_process = start_background_command(template, command, dry_run=args.dry_run)
+        hub_server_result_index = len(results)
+        results.append(initial_result)
+
+    if hub_server_process is not None and hub_server_result_index is not None:
+        time.sleep(args.hub_server_start_delay)
+        if hub_server_process.poll() is not None:
+            results[hub_server_result_index] = finalize_background_command(
+                results[hub_server_result_index],
+                hub_server_process,
+                stop_if_running=False,
+            )
+            hub_server_process = None
+
+    for remote_template in FORTIGATE_SPOKE_COMMANDS:
+        try:
+            template, command = build_ssh_command(site, args.ssh_template, site.ip_address, remote_template)
+        except KeyError as error:
+            ended_at = datetime.now()
+            results.append(
+                CommandResult(
+                    template=remote_template,
+                    command="",
+                    started_at=ended_at,
+                    ended_at=ended_at,
+                    return_code=None,
+                    stdout="",
+                    stderr="",
+                    error=f"Missing placeholder value for '{error.args[0]}'",
+                )
+            )
+            continue
+
+        results.append(run_rendered_command(template, command, timeout=args.timeout, dry_run=args.dry_run))
+
+    if hub_server_process is not None and hub_server_result_index is not None:
+        results[hub_server_result_index] = finalize_background_command(
+            results[hub_server_result_index],
+            hub_server_process,
+            stop_if_running=True,
+        )
+
+    ended_at = datetime.now()
+    return SiteRun(
+        site=site,
+        started_at=started_at,
+        ended_at=ended_at,
+        command_results=results,
+        name_discovery_result=name_discovery_result,
+    )
+
+
 def summarize(results: list[SiteRun]) -> dict[str, Any]:
     total_commands = sum(len(site_run.command_results) for site_run in results)
     failed_sites = sum(1 for site_run in results if site_run.status != "success")
@@ -660,6 +925,7 @@ def build_html_report(
               <td>{index}</td>
               <td>{name}</td>
               <td>{ip}</td>
+              <td>{hub_ip}</td>
               <td>{speed}</td>
               <td>{test_speed}</td>
               <td class="{status_class}">{status}</td>
@@ -671,6 +937,7 @@ def build_html_report(
                 index=site_run.site.index,
                 name=html.escape(site_run.site.display_name),
                 ip=html.escape(site_run.site.ip_address or "N/A"),
+                hub_ip=html.escape(site_run.site.hub_ip or "N/A"),
                 speed=html.escape(site_run.site.speed or "N/A"),
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
                 status=html.escape(site_run.status),
@@ -752,6 +1019,7 @@ def build_html_report(
             <section class="site-card">
               <h2>{name}</h2>
               <p><strong>IP:</strong> {ip}</p>
+              <p><strong>Hub IP:</strong> {hub_ip}</p>
               <p><strong>Configured Speed:</strong> {speed}</p>
               <p><strong>Traffic Test Bandwidth (+15%):</strong> {test_speed}</p>
               <p><strong>Site Status:</strong> <span class="{status_class}">{status}</span></p>
@@ -763,6 +1031,7 @@ def build_html_report(
             """.format(
                 name=html.escape(site_run.site.display_name),
                 ip=html.escape(site_run.site.ip_address or "N/A"),
+                hub_ip=html.escape(site_run.site.hub_ip or "N/A"),
                 speed=html.escape(site_run.site.speed or "N/A"),
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
                 status=html.escape(site_run.status),
@@ -876,7 +1145,7 @@ def build_html_report(
 <body>
   <main>
     <section class="hero">
-      <h1>SD-WAN Traffic Test Report</h1>
+      <h1>FortiGate Traffic Test Report</h1>
       <p class="muted">Generated at {html.escape(format_timestamp(created_at))}</p>
       <p><strong>Input File:</strong> {html.escape(str(input_path))}</p>
       <p><strong>Report File:</strong> {html.escape(str(output_path))}</p>
@@ -901,6 +1170,7 @@ def build_html_report(
             <th>#</th>
             <th>Firewall</th>
             <th>IP</th>
+            <th>Hub IP</th>
             <th>Speed</th>
             <th>Test Bandwidth</th>
             <th>Status</th>
@@ -924,7 +1194,7 @@ def build_html_report(
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run SD-WAN spoke traffic tests sequentially from CSV/XLSX input and generate an HTML report."
+        description="Run FortiGate hub/spoke traffictest commands sequentially from CSV/XLSX input and generate an HTML report."
     )
     parser.add_argument("--input", required=True, help="Path to a CSV or XLSX file containing spoke data.")
     parser.add_argument("--sheet", help="Worksheet name to read when the input file is XLSX.")
@@ -932,9 +1202,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--command",
         action="append",
         help=(
-            "Command template to run for each site. Useful placeholders include "
+            "Optional custom command template to run for each site. If omitted, the built-in "
+            "FortiGate diagnose traffictest hub/spoke flow is used. Useful placeholders include "
             "{firewall_name}, {spoke_name}, {spoke_ip}, {speed}, "
-            "{speed_with_margin}, {speed_with_margin_mbps}."
+            "{speed_with_margin}, {speed_with_margin_mbps}, and {hub_ip}."
         ),
     )
     parser.add_argument(
@@ -955,6 +1226,43 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=30,
         help="Timeout in seconds for firewall name discovery. Default: 30.",
+    )
+    parser.add_argument(
+        "--hub-ip",
+        help="Hub firewall IP address. If omitted, each input row must provide a hub_ip column.",
+    )
+    parser.add_argument(
+        "--ssh-template",
+        default=DEFAULT_SSH_TEMPLATE,
+        help=(
+            "SSH wrapper template for built-in FortiGate traffictest commands. "
+            "Available placeholders: {target}, {remote_command}, plus site placeholders. "
+            "Default: %(default)s"
+        ),
+    )
+    parser.add_argument(
+        "--hub-server-intf",
+        default=DEFAULT_HUB_SERVER_INTF,
+        help=f"Hub interface for 'diagnose traffictest server-intf'. Default: {DEFAULT_HUB_SERVER_INTF}.",
+    )
+    parser.add_argument(
+        "--spoke-client-intf",
+        default=DEFAULT_SPOKE_CLIENT_INTF,
+        help=f"Spoke interface for 'diagnose traffictest client-intf'. Default: {DEFAULT_SPOKE_CLIENT_INTF}.",
+    )
+    parser.add_argument(
+        "--traffictest-port",
+        default=DEFAULT_TRAFFICTEST_PORT,
+        help=f"FortiGate traffictest port. Default: {DEFAULT_TRAFFICTEST_PORT}.",
+    )
+    parser.add_argument(
+        "--hub-server-start-delay",
+        type=float,
+        default=DEFAULT_HUB_SERVER_START_DELAY_SECONDS,
+        help=(
+            "Seconds to wait after starting the hub traffictest server before running spoke commands. "
+            f"Default: {DEFAULT_HUB_SERVER_START_DELAY_SECONDS}."
+        ),
     )
     parser.add_argument(
         "--delay-seconds",
@@ -995,13 +1303,42 @@ def main() -> int:
         parser.error("--delay-seconds must be 0 or greater.")
     if args.firewall_name_timeout < 1:
         parser.error("--firewall-name-timeout must be 1 or greater.")
+    if args.hub_server_start_delay < 0:
+        parser.error("--hub-server-start-delay must be 0 or greater.")
 
     rows = load_rows(input_path, args.sheet)
     if not rows:
         parser.error("No spoke rows were found in the input file.")
 
     sites = build_sites(rows)
+    for site in sites:
+        if args.hub_ip:
+            site.hub_ip = args.hub_ip
+            site.placeholders["hub_ip"] = args.hub_ip
+            site.placeholders["hub"] = args.hub_ip
+        site.placeholders["hub_server_intf"] = args.hub_server_intf
+        site.placeholders["spoke_client_intf"] = args.spoke_client_intf
+        site.placeholders["traffictest_port"] = str(args.traffictest_port)
+        site.placeholders["traffic_port"] = str(args.traffictest_port)
+
     command_templates = load_command_templates(args)
+    use_builtin_traffictest = not command_templates
+    active_command_templates = fortigate_traffictest_templates() if use_builtin_traffictest else command_templates
+
+    if use_builtin_traffictest:
+        missing_hub_rows = [str(site.index) for site in sites if not site.hub_ip]
+        if missing_hub_rows:
+            parser.error(
+                "The built-in FortiGate traffictest flow requires --hub-ip or a hub_ip column. "
+                f"Missing hub IP for row(s): {', '.join(missing_hub_rows)}"
+            )
+        missing_speed_rows = [str(site.index) for site in sites if not site.speed_with_margin_label]
+        if missing_speed_rows:
+            parser.error(
+                "The built-in FortiGate traffictest flow requires a speed value for every row. "
+                f"Missing/invalid speed for row(s): {', '.join(missing_speed_rows)}"
+            )
+
     available_placeholders = set(sites[0].placeholders)
     available_placeholders.update(
         {
@@ -1014,16 +1351,27 @@ def main() -> int:
             "device_name",
             "spoke_ip",
             "ip",
+            "hub_ip",
+            "hub",
             "speed",
             "expected_speed",
             "speed_mbps",
             "speed_with_margin_mbps",
             "speed_with_margin",
             "bandwidth_with_margin",
+            "hub_server_intf",
+            "spoke_client_intf",
+            "traffictest_port",
+            "traffic_port",
         }
     )
-    validate_template_fields(command_templates, available_placeholders)
+    validate_template_fields(active_command_templates, available_placeholders)
     validate_template_fields([args.firewall_name_command], available_placeholders)
+    if use_builtin_traffictest:
+        validate_template_fields(
+            [args.ssh_template],
+            available_placeholders | {"target", "remote_command"},
+        )
 
     runs: list[SiteRun] = []
     total_sites = len(sites)
@@ -1042,13 +1390,20 @@ def main() -> int:
             print(f"  Could not discover firewall name; using fallback '{site.display_name}'.")
 
         print(f"[{index}/{total_sites}] Running site '{site.display_name}' ({site.ip_address or 'no-ip'})")
-        site_run = run_site(
-            site,
-            command_templates,
-            timeout=args.timeout,
-            dry_run=args.dry_run,
-            name_discovery_result=name_result,
-        )
+        if use_builtin_traffictest:
+            site_run = run_fortigate_traffictest_site(
+                site,
+                args,
+                name_discovery_result=name_result,
+            )
+        else:
+            site_run = run_site(
+                site,
+                command_templates,
+                timeout=args.timeout,
+                dry_run=args.dry_run,
+                name_discovery_result=name_result,
+            )
         runs.append(site_run)
 
         if index < total_sites and args.delay_seconds:
@@ -1060,7 +1415,7 @@ def main() -> int:
         input_path=input_path,
         output_path=output_path,
         results=runs,
-        command_templates=command_templates,
+        command_templates=active_command_templates,
         delay_seconds=args.delay_seconds,
     )
     output_path.write_text(report_html, encoding="utf-8")

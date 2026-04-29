@@ -505,6 +505,29 @@ def build_ssh_command(
     return remote_template, command
 
 
+def build_ssh_command_or_error(
+    site: SiteDefinition,
+    ssh_template: str,
+    target: str,
+    remote_template: str,
+) -> tuple[str | None, CommandResult | None]:
+    try:
+        _, command = build_ssh_command(site, ssh_template, target, remote_template)
+    except KeyError as error:
+        moment = datetime.now()
+        return None, CommandResult(
+            template=remote_template,
+            command="",
+            started_at=moment,
+            ended_at=moment,
+            return_code=None,
+            stdout="",
+            stderr="",
+            error=f"Missing placeholder value for '{error.args[0]}'",
+        )
+    return command, None
+
+
 def run_rendered_command(
     template: str,
     command: str,
@@ -660,51 +683,39 @@ def render_command(template: str, site: SiteDefinition) -> str:
     return render_template(template, site)
 
 
+def render_command_or_error(
+    template: str,
+    site: SiteDefinition,
+) -> tuple[str | None, CommandResult | None]:
+    try:
+        command = render_command(template, site)
+    except KeyError as error:
+        moment = datetime.now()
+        return None, CommandResult(
+            template=template,
+            command="",
+            started_at=moment,
+            ended_at=moment,
+            return_code=None,
+            stdout="",
+            stderr="",
+            error=f"Missing placeholder value for '{error.args[0]}'",
+        )
+    return command, None
+
+
 def discover_firewall_name(
     site: SiteDefinition,
     command_template: str,
     timeout: int | None,
     dry_run: bool,
 ) -> tuple[CommandResult, str | None]:
-    started_at = datetime.now()
-    try:
-        command = render_command(command_template, site)
-    except KeyError as error:
-        ended_at = datetime.now()
-        return (
-            CommandResult(
-                template=command_template,
-                command="",
-                started_at=started_at,
-                ended_at=ended_at,
-                return_code=None,
-                stdout="",
-                stderr="",
-                error=f"Missing placeholder value for '{error.args[0]}'",
-            ),
-            None,
-        )
+    command, error_result = render_command_or_error(command_template, site)
+    if error_result is not None:
+        return error_result, None
 
-    try:
-        result = run_command(command, timeout=timeout, dry_run=dry_run)
-    except subprocess.TimeoutExpired as error:
-        ended_at = datetime.now()
-        return (
-            CommandResult(
-                template=command_template,
-                command=command,
-                started_at=started_at,
-                ended_at=ended_at,
-                return_code=None,
-                stdout=error.stdout or "",
-                stderr=error.stderr or "",
-                error=f"Timed out after {error.timeout} seconds",
-            ),
-            None,
-        )
-
-    result.template = command_template
-    if dry_run:
+    result = run_rendered_command(command_template, command, timeout=timeout, dry_run=dry_run)
+    if result.error or dry_run:
         return result, None
 
     discovered_name = parse_firewall_name(result.stdout)
@@ -724,44 +735,11 @@ def run_site(
     results: list[CommandResult] = []
 
     for template in command_templates:
-        try:
-            command = render_command(template, site)
-        except KeyError as error:
-            ended_at = datetime.now()
-            results.append(
-                CommandResult(
-                    template=template,
-                    command="",
-                    started_at=ended_at,
-                    ended_at=ended_at,
-                    return_code=None,
-                    stdout="",
-                    stderr="",
-                    error=f"Missing placeholder value for '{error.args[0]}'",
-                )
-            )
+        command, error_result = render_command_or_error(template, site)
+        if error_result is not None:
+            results.append(error_result)
             continue
-
-        try:
-            result = run_command(command, timeout=timeout, dry_run=dry_run)
-        except subprocess.TimeoutExpired as error:
-            ended_at = datetime.now()
-            results.append(
-                CommandResult(
-                    template=template,
-                    command=command,
-                    started_at=started_at,
-                    ended_at=ended_at,
-                    return_code=None,
-                    stdout=error.stdout or "",
-                    stderr=error.stderr or "",
-                    error=f"Timed out after {error.timeout} seconds",
-                )
-            )
-            continue
-
-        result.template = template
-        results.append(result)
+        results.append(run_rendered_command(template, command, timeout=timeout, dry_run=dry_run))
 
     ended_at = datetime.now()
     return SiteRun(
@@ -784,44 +762,21 @@ def run_fortigate_traffictest_site(
     hub_server_result_index: int | None = None
 
     for remote_template in FORTIGATE_HUB_SETUP_COMMANDS:
-        try:
-            template, command = build_ssh_command(site, args.ssh_template, site.hub_ip, remote_template)
-        except KeyError as error:
-            ended_at = datetime.now()
-            results.append(
-                CommandResult(
-                    template=remote_template,
-                    command="",
-                    started_at=ended_at,
-                    ended_at=ended_at,
-                    return_code=None,
-                    stdout="",
-                    stderr="",
-                    error=f"Missing placeholder value for '{error.args[0]}'",
-                )
-            )
+        command, error_result = build_ssh_command_or_error(site, args.ssh_template, site.hub_ip, remote_template)
+        if error_result is not None:
+            results.append(error_result)
             continue
+        results.append(run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run))
 
-        results.append(run_rendered_command(template, command, timeout=args.timeout, dry_run=args.dry_run))
-
-    try:
-        template, command = build_ssh_command(site, args.ssh_template, site.hub_ip, FORTIGATE_HUB_SERVER_COMMAND)
-    except KeyError as error:
-        ended_at = datetime.now()
-        results.append(
-            CommandResult(
-                template=FORTIGATE_HUB_SERVER_COMMAND,
-                command="",
-                started_at=ended_at,
-                ended_at=ended_at,
-                return_code=None,
-                stdout="",
-                stderr="",
-                error=f"Missing placeholder value for '{error.args[0]}'",
-            )
-        )
+    command, error_result = build_ssh_command_or_error(
+        site, args.ssh_template, site.hub_ip, FORTIGATE_HUB_SERVER_COMMAND
+    )
+    if error_result is not None:
+        results.append(error_result)
     else:
-        initial_result, hub_server_process = start_background_command(template, command, dry_run=args.dry_run)
+        initial_result, hub_server_process = start_background_command(
+            FORTIGATE_HUB_SERVER_COMMAND, command, dry_run=args.dry_run
+        )
         hub_server_result_index = len(results)
         results.append(initial_result)
 
@@ -836,25 +791,11 @@ def run_fortigate_traffictest_site(
             hub_server_process = None
 
     for remote_template in FORTIGATE_SPOKE_COMMANDS:
-        try:
-            template, command = build_ssh_command(site, args.ssh_template, site.ip_address, remote_template)
-        except KeyError as error:
-            ended_at = datetime.now()
-            results.append(
-                CommandResult(
-                    template=remote_template,
-                    command="",
-                    started_at=ended_at,
-                    ended_at=ended_at,
-                    return_code=None,
-                    stdout="",
-                    stderr="",
-                    error=f"Missing placeholder value for '{error.args[0]}'",
-                )
-            )
+        command, error_result = build_ssh_command_or_error(site, args.ssh_template, site.ip_address, remote_template)
+        if error_result is not None:
+            results.append(error_result)
             continue
-
-        results.append(run_rendered_command(template, command, timeout=args.timeout, dry_run=args.dry_run))
+        results.append(run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run))
 
     if hub_server_process is not None and hub_server_result_index is not None:
         results[hub_server_result_index] = finalize_background_command(
@@ -1377,7 +1318,7 @@ def main() -> int:
     total_sites = len(sites)
 
     for index, site in enumerate(sites, start=1):
-        print(f"[{index}/{total_sites}] Discovering firewall name ({site.ip_address or 'no-ip'})")
+        print(f"[{index}/{total_sites}] Discovering firewall name ({site.ip_address or 'no-ip'})", flush=True)
         name_result, discovered_name = discover_firewall_name(
             site,
             args.firewall_name_command,
@@ -1387,9 +1328,9 @@ def main() -> int:
         if discovered_name:
             set_site_display_name(site, discovered_name)
         elif not args.dry_run:
-            print(f"  Could not discover firewall name; using fallback '{site.display_name}'.")
+            print(f"  Could not discover firewall name; using fallback '{site.display_name}'.", flush=True)
 
-        print(f"[{index}/{total_sites}] Running site '{site.display_name}' ({site.ip_address or 'no-ip'})")
+        print(f"[{index}/{total_sites}] Running site '{site.display_name}' ({site.ip_address or 'no-ip'})", flush=True)
         if use_builtin_traffictest:
             site_run = run_fortigate_traffictest_site(
                 site,
@@ -1408,7 +1349,7 @@ def main() -> int:
 
         if index < total_sites and args.delay_seconds:
             site_run.delayed_after_seconds = args.delay_seconds
-            print(f"Waiting {args.delay_seconds} seconds before the next site...")
+            print(f"Waiting {args.delay_seconds} seconds before the next site...", flush=True)
             time.sleep(args.delay_seconds)
 
     report_html = build_html_report(

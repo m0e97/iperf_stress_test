@@ -178,16 +178,17 @@ Command templates can use these placeholders:
 | `{hub_ip}` or `{hub}` | Hub firewall IP address |
 | `{firewall_name}` | Firewall name discovered over SSH |
 | `{hostname}` | Same as discovered firewall name |
+| `{device_name}` | Same as discovered firewall name |
 | `{spoke_name}` | Same as discovered firewall name |
 | `{site_name}` | Same as discovered firewall name |
 | `{name}` | Same as discovered firewall name |
-| `{speed}` | Speed from the input file |
+| `{speed}` or `{expected_speed}` | Speed from the input file |
 | `{speed_mbps}` | Parsed speed in Mbps |
-| `{speed_with_margin}` | Speed plus 15%, formatted for FortiGate, for example `115M` |
+| `{speed_with_margin}` or `{bandwidth_with_margin}` | Speed plus 15%, formatted for FortiGate, for example `115M` |
 | `{speed_with_margin_mbps}` | Speed plus 15% as a number |
 | `{hub_server_intf}` | Hub server interface |
 | `{spoke_client_intf}` | Spoke client interface |
-| `{traffictest_port}` | Traffic-test port |
+| `{traffictest_port}` or `{traffic_port}` | Traffic-test port |
 | `{site_index}` | Row number, starting from 1 |
 
 ## Custom Commands
@@ -203,6 +204,23 @@ python3 main.py \
 ```
 
 You can pass `--command` more than once, and commands run in the order provided.
+
+To keep a long list of templates in a file, use `--command-file`:
+
+```bash
+python3 main.py \
+  --input spokes.csv \
+  --command-file commands.txt
+```
+
+Inside the file, blank lines and lines starting with `#` are ignored:
+
+```text
+# health check
+ssh admin@{spoke_ip} "get system status"
+# routing snapshot
+ssh admin@{spoke_ip} "get router info routing-table all"
+```
 
 ## Useful Options
 
@@ -272,3 +290,7 @@ If the report shows failed commands:
 
 - Open the HTML report and check each command block.
 - Review stdout, stderr, return code, and timeout messages.
+
+## Exit Code
+
+The script exits with `0` when every spoke run succeeds and with `1` when at least one spoke has any failed or template-error command. The HTML report is written either way.

@@ -21,18 +21,20 @@ When you do not pass `--command` or `--command-file`, the script uses the built-
 Hub commands run first:
 
 ```text
-diagnose traffictest server-intf Mobily
-diagnose traffictest port 5201
+diagnose traffictest server-intf {hub_server_intf}
+diagnose traffictest port {traffictest_port}
 diagnose traffictest run -s
 ```
 
 Spoke commands run after the hub server starts:
 
 ```text
-diagnose traffictest client-intf wan1
-diagnose traffictest port 5201
+diagnose traffictest client-intf {spoke_client_intf}
+diagnose traffictest port {traffictest_port}
 diagnose traffictest run -b {speed_with_margin} -c {hub_ip}
 ```
+
+Each placeholder is filled in per row: `{hub_server_intf}`, `{spoke_client_intf}`, and `{traffictest_port}` come from the input file (see [Input File](#input-file)) or fall back to `--hub-server-intf` / `--spoke-client-intf` / `--traffictest-port`. `{speed_with_margin}` is the row's speed plus 15%, and `{hub_ip}` is the row's hub IP (or `--hub-ip` when set).
 
 The hub server command is started in the background because `diagnose traffictest run -s` can stay running while it waits for the spoke client. After the spoke commands finish, the script stops and collects the hub server output.
 
@@ -58,6 +60,7 @@ The script recognizes these column names, case-insensitively after normalizing s
 | Speed | `speed`, `rate`, `bandwidth`, `expected_speed`, `speed_mbps`, `bandwidth_mbps` |
 | Hub server interface | `server_intf`, `hub_server_intf`, `hub_intf`, `hub_interface`, `server_interface` |
 | Spoke client interface | `client_intf`, `spoke_client_intf`, `spoke_intf`, `spoke_interface`, `client_interface`, `wan_intf`, `wan_interface` |
+| Traffic-test port | `traffictest_port`, `traffic_port`, `iperf_port`, `test_port` |
 
 Name columns such as `name`, `site`, or `spoke_name` are not used as the final firewall name. The script uses the firewall name discovered from SSH.
 
@@ -71,12 +74,12 @@ spoke_ip,hub_ip,speed
 
 You can also provide one hub IP for all rows with `--hub-ip`.
 
-To override the hub or spoke interface per row, add `server_intf` and `client_intf` columns. Rows that leave them blank fall back to `--hub-server-intf` and `--spoke-client-intf` (defaults `Mobily` and `wan1`):
+To override the hub interface, spoke interface, or traffic-test port per row, add `server_intf`, `client_intf`, and `traffictest_port` columns. Rows that leave them blank fall back to `--hub-server-intf`, `--spoke-client-intf`, and `--traffictest-port` (defaults `Mobily`, `wan1`, and `5201`):
 
 ```csv
-spoke_ip,hub_ip,speed,server_intf,client_intf
-10.10.10.1,10.255.0.1,100M,STC,wan2
-10.10.20.1,10.255.0.1,200M,,
+spoke_ip,hub_ip,speed,server_intf,client_intf,traffictest_port
+10.10.10.1,10.255.0.1,100M,STC,wan2,5300
+10.10.20.1,10.255.0.1,200M,,,
 ```
 
 ## Firewall Name Discovery
@@ -151,7 +154,7 @@ Defaults:
 | Spoke client interface | `wan1` |
 | Traffic-test port | `5201` |
 
-The hub and spoke interfaces can also come from the input file using the `server_intf` and `client_intf` columns (see the table above for accepted aliases). The CLI flags below act as a fallback for any row that leaves those columns empty.
+The hub interface, spoke interface, and traffic-test port can also come from the input file using the `server_intf`, `client_intf`, and `traffictest_port` columns (see the table above for accepted aliases). The CLI flags below act as a fallback for any row that leaves those columns empty.
 
 Override them like this:
 

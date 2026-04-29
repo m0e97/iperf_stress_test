@@ -76,6 +76,12 @@ SPOKE_CLIENT_INTF_ALIASES = {
     "wan_intf",
     "wan_interface",
 }
+TRAFFICTEST_PORT_ALIASES = {
+    "traffictest_port",
+    "traffic_port",
+    "iperf_port",
+    "test_port",
+}
 
 
 @dataclass
@@ -92,6 +98,7 @@ class SiteDefinition:
     speed_with_margin_label: str
     hub_server_intf: str = ""
     spoke_client_intf: str = ""
+    traffictest_port: str = ""
 
 
 @dataclass
@@ -338,6 +345,7 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
         speed = find_first_value(placeholders, SPEED_ALIASES)
         hub_server_intf = find_first_value(placeholders, HUB_SERVER_INTF_ALIASES)
         spoke_client_intf = find_first_value(placeholders, SPOKE_CLIENT_INTF_ALIASES)
+        traffictest_port = find_first_value(placeholders, TRAFFICTEST_PORT_ALIASES)
         speed_mbps = parse_speed_to_mbps(speed)
         speed_with_margin_mbps = round(speed_mbps * 1.15, 2) if speed_mbps is not None else None
         speed_with_margin_label = format_mbps_for_traffictest(speed_with_margin_mbps)
@@ -364,6 +372,7 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
                 speed_with_margin_label=speed_with_margin_label,
                 hub_server_intf=hub_server_intf,
                 spoke_client_intf=spoke_client_intf,
+                traffictest_port=traffictest_port,
             )
         )
     return sites
@@ -1222,7 +1231,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--traffictest-port",
         default=DEFAULT_TRAFFICTEST_PORT,
-        help=f"FortiGate traffictest port. Default: {DEFAULT_TRAFFICTEST_PORT}.",
+        help=(
+            "Fallback FortiGate traffictest port when the input row has no "
+            f"traffictest_port/traffic_port column. Default: {DEFAULT_TRAFFICTEST_PORT}."
+        ),
     )
     parser.add_argument(
         "--hub-server-start-delay",
@@ -1287,10 +1299,11 @@ def main() -> int:
             site.placeholders["hub"] = args.hub_ip
         site.hub_server_intf = site.hub_server_intf or args.hub_server_intf
         site.spoke_client_intf = site.spoke_client_intf or args.spoke_client_intf
+        site.traffictest_port = site.traffictest_port or str(args.traffictest_port)
         site.placeholders["hub_server_intf"] = site.hub_server_intf
         site.placeholders["spoke_client_intf"] = site.spoke_client_intf
-        site.placeholders["traffictest_port"] = str(args.traffictest_port)
-        site.placeholders["traffic_port"] = str(args.traffictest_port)
+        site.placeholders["traffictest_port"] = site.traffictest_port
+        site.placeholders["traffic_port"] = site.traffictest_port
 
     command_templates = load_command_templates(args)
     use_builtin_traffictest = not command_templates

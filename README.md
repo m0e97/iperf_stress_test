@@ -56,6 +56,8 @@ The script recognizes these column names, case-insensitively after normalizing s
 | Spoke IP | `ip`, `host`, `address`, `spoke_ip`, `branch_ip`, `wan_ip` |
 | Hub IP | `hub_ip`, `hub`, `hub_host`, `hub_address`, `hub_wan_ip` |
 | Speed | `speed`, `rate`, `bandwidth`, `expected_speed`, `speed_mbps`, `bandwidth_mbps` |
+| Hub server interface | `server_intf`, `hub_server_intf`, `hub_intf`, `hub_interface`, `server_interface` |
+| Spoke client interface | `client_intf`, `spoke_client_intf`, `spoke_intf`, `spoke_interface`, `client_interface`, `wan_intf`, `wan_interface` |
 
 Name columns such as `name`, `site`, or `spoke_name` are not used as the final firewall name. The script uses the firewall name discovered from SSH.
 
@@ -68,6 +70,14 @@ spoke_ip,hub_ip,speed
 ```
 
 You can also provide one hub IP for all rows with `--hub-ip`.
+
+To override the hub or spoke interface per row, add `server_intf` and `client_intf` columns. Rows that leave them blank fall back to `--hub-server-intf` and `--spoke-client-intf` (defaults `Mobily` and `wan1`):
+
+```csv
+spoke_ip,hub_ip,speed,server_intf,client_intf
+10.10.10.1,10.255.0.1,100M,STC,wan2
+10.10.20.1,10.255.0.1,200M,,
+```
 
 ## Firewall Name Discovery
 
@@ -140,6 +150,8 @@ Defaults:
 | Hub server interface | `Mobily` |
 | Spoke client interface | `wan1` |
 | Traffic-test port | `5201` |
+
+The hub and spoke interfaces can also come from the input file using the `server_intf` and `client_intf` columns (see the table above for accepted aliases). The CLI flags below act as a fallback for any row that leaves those columns empty.
 
 Override them like this:
 

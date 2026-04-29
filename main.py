@@ -60,6 +60,22 @@ SPEED_ALIASES = {
     "speed_mbps",
     "bandwidth_mbps",
 }
+HUB_SERVER_INTF_ALIASES = {
+    "hub_server_intf",
+    "server_intf",
+    "hub_intf",
+    "hub_interface",
+    "server_interface",
+}
+SPOKE_CLIENT_INTF_ALIASES = {
+    "spoke_client_intf",
+    "client_intf",
+    "spoke_intf",
+    "spoke_interface",
+    "client_interface",
+    "wan_intf",
+    "wan_interface",
+}
 
 
 @dataclass
@@ -74,6 +90,8 @@ class SiteDefinition:
     speed_mbps: float | None
     speed_with_margin_mbps: float | None
     speed_with_margin_label: str
+    hub_server_intf: str = ""
+    spoke_client_intf: str = ""
 
 
 @dataclass
@@ -318,6 +336,8 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
             placeholders.setdefault("hub_ip", hub_ip)
             placeholders.setdefault("hub", hub_ip)
         speed = find_first_value(placeholders, SPEED_ALIASES)
+        hub_server_intf = find_first_value(placeholders, HUB_SERVER_INTF_ALIASES)
+        spoke_client_intf = find_first_value(placeholders, SPOKE_CLIENT_INTF_ALIASES)
         speed_mbps = parse_speed_to_mbps(speed)
         speed_with_margin_mbps = round(speed_mbps * 1.15, 2) if speed_mbps is not None else None
         speed_with_margin_label = format_mbps_for_traffictest(speed_with_margin_mbps)
@@ -342,6 +362,8 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
                 speed_mbps=speed_mbps,
                 speed_with_margin_mbps=speed_with_margin_mbps,
                 speed_with_margin_label=speed_with_margin_label,
+                hub_server_intf=hub_server_intf,
+                spoke_client_intf=spoke_client_intf,
             )
         )
     return sites
@@ -1184,12 +1206,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--hub-server-intf",
         default=DEFAULT_HUB_SERVER_INTF,
-        help=f"Hub interface for 'diagnose traffictest server-intf'. Default: {DEFAULT_HUB_SERVER_INTF}.",
+        help=(
+            "Fallback hub interface for 'diagnose traffictest server-intf' when the input row has no "
+            f"server_intf/hub_server_intf column. Default: {DEFAULT_HUB_SERVER_INTF}."
+        ),
     )
     parser.add_argument(
         "--spoke-client-intf",
         default=DEFAULT_SPOKE_CLIENT_INTF,
-        help=f"Spoke interface for 'diagnose traffictest client-intf'. Default: {DEFAULT_SPOKE_CLIENT_INTF}.",
+        help=(
+            "Fallback spoke interface for 'diagnose traffictest client-intf' when the input row has no "
+            f"client_intf/spoke_client_intf column. Default: {DEFAULT_SPOKE_CLIENT_INTF}."
+        ),
     )
     parser.add_argument(
         "--traffictest-port",
@@ -1257,8 +1285,10 @@ def main() -> int:
             site.hub_ip = args.hub_ip
             site.placeholders["hub_ip"] = args.hub_ip
             site.placeholders["hub"] = args.hub_ip
-        site.placeholders["hub_server_intf"] = args.hub_server_intf
-        site.placeholders["spoke_client_intf"] = args.spoke_client_intf
+        site.hub_server_intf = site.hub_server_intf or args.hub_server_intf
+        site.spoke_client_intf = site.spoke_client_intf or args.spoke_client_intf
+        site.placeholders["hub_server_intf"] = site.hub_server_intf
+        site.placeholders["spoke_client_intf"] = site.spoke_client_intf
         site.placeholders["traffictest_port"] = str(args.traffictest_port)
         site.placeholders["traffic_port"] = str(args.traffictest_port)
 

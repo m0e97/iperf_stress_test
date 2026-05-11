@@ -4,6 +4,7 @@ import argparse
 import csv
 import html
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -1229,6 +1230,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Timeout in seconds for firewall name discovery. Default: 30.",
     )
     parser.add_argument(
+        "--sshuser",
+        help="SSH username to prepend to every target (e.g. admin).",
+    )
+    parser.add_argument(
+        "--sshpw",
+        help="SSH password. When provided, sshpass is used to supply it non-interactively.",
+    )
+    parser.add_argument(
         "--hub-ip",
         help="Hub firewall IP address. If omitted, each input row must provide a hub_ip column.",
     )
@@ -1324,6 +1333,15 @@ def main() -> int:
         parser.error("--firewall-name-timeout must be 1 or greater.")
     if args.hub_server_start_delay < 0:
         parser.error("--hub-server-start-delay must be 0 or greater.")
+
+    if args.sshuser or args.sshpw:
+        user_at = f"{args.sshuser}@" if args.sshuser else ""
+        if args.sshpw:
+            ssh_base = f"sshpass -p {shlex.quote(args.sshpw)} ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+        else:
+            ssh_base = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+        args.ssh_template = f'{ssh_base} {user_at}{{target}} "{{remote_command}}"'
+        args.firewall_name_command = f'{ssh_base} {user_at}{{spoke_ip}} "get system status"'
 
     rows = load_rows(input_path, args.sheet)
     if not rows:

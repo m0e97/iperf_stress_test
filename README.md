@@ -130,6 +130,21 @@ python3 main.py \
   --hub-ip 10.255.0.1
 ```
 
+## SSH Credentials
+
+Use `--sshuser` and `--sshpw` to supply credentials without customizing the SSH template manually:
+
+```bash
+python3 main.py \
+  --input spokes.csv \
+  --sshuser admin \
+  --sshpw mypassword
+```
+
+When `--sshpw` is provided the script automatically uses `sshpass` to supply the password non-interactively, so `sshpass` must be installed on the machine running the script. When only `--sshuser` is given, standard key-based authentication is used with the username prepended.
+
+These flags override both the built-in SSH template and the firewall name discovery command. If you need further control (custom port, identity file, etc.) use `--ssh-template` and `--firewall-name-command` directly.
+
 ## SSH Username Or Options
 
 The built-in FortiGate speed-test commands use this SSH wrapper by default:
@@ -138,7 +153,7 @@ The built-in FortiGate speed-test commands use this SSH wrapper by default:
 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {target} "{remote_command}"
 ```
 
-If you need a username, customize it:
+If you need a username without a password, you can use `--sshuser` (see above) or customize the template:
 
 ```bash
 python3 main.py \
@@ -252,6 +267,8 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--input` | Required CSV or XLSX input file |
 | `--sheet` | Worksheet name when using XLSX |
 | `--hub-ip` | One hub IP to use for all spokes |
+| `--sshuser` | SSH username prepended to every target |
+| `--sshpw` | SSH password supplied via `sshpass` |
 | `--ssh-template` | SSH wrapper for built-in hub/spoke traffictest commands |
 | `--hub-server-intf` | Hub interface for `server-intf`, default `Mobily` |
 | `--spoke-client-intf` | Spoke interface for `client-intf`, default `wan1` |

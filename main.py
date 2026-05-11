@@ -1236,8 +1236,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sshpw",
-        action="store_true",
-        help="Prompt for SSH password interactively (characters are hidden). Uses sshpass to authenticate.",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="PASSWORD",
+        help=(
+            "SSH password. Supply it directly as a value, or pass the flag with no value "
+            "to be prompted interactively with hidden characters. Uses sshpass to authenticate."
+        ),
     )
     parser.add_argument(
         "--hub-ip",
@@ -1336,10 +1342,10 @@ def main() -> int:
     if args.hub_server_start_delay < 0:
         parser.error("--hub-server-start-delay must be 0 or greater.")
 
-    if args.sshuser or args.sshpw:
+    if args.sshuser or args.sshpw is not None:
         user_at = f"{args.sshuser}@" if args.sshuser else ""
-        if args.sshpw:
-            password = getpass.getpass("SSH password: ")
+        if args.sshpw is not None:
+            password = getpass.getpass("SSH password: ") if args.sshpw is True else args.sshpw
             ssh_base = f"sshpass -p {shlex.quote(password)} ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
         else:
             ssh_base = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"

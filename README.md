@@ -142,7 +142,18 @@ python3 main.py \
 SSH password:
 ```
 
-`--sshpw` is a flag with no value. When present, the script pauses and prompts for the password interactively — typed characters are not displayed. The password is then passed to `sshpass` at runtime, so `sshpass` must be installed on the machine running the script. When only `--sshuser` is given, standard key-based authentication is used with the username prepended.
+`--sshpw` accepts an optional value. Provide the password directly as an argument, or pass the flag with no value to be prompted interactively with hidden characters:
+
+```bash
+# Password as argument
+python3 main.py --input spokes.csv --sshuser admin --sshpw mypassword
+
+# Interactive prompt (characters hidden)
+python3 main.py --input spokes.csv --sshuser admin --sshpw
+SSH password:
+```
+
+The password is passed to `sshpass` at runtime, so `sshpass` must be installed on the machine running the script. When only `--sshuser` is given, standard key-based authentication is used with the username prepended.
 
 These flags override both the built-in SSH template and the firewall name discovery command. If you need further control (custom port, identity file, etc.) use `--ssh-template` and `--firewall-name-command` directly.
 
@@ -269,7 +280,7 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--sheet` | Worksheet name when using XLSX |
 | `--hub-ip` | One hub IP to use for all spokes |
 | `--sshuser` | SSH username prepended to every target |
-| `--sshpw` | Flag — prompts for SSH password invisibly, supplied via `sshpass` |
+| `--sshpw [PASSWORD]` | SSH password as a value, or omit the value to be prompted invisibly |
 | `--ssh-template` | SSH wrapper for built-in hub/spoke traffictest commands |
 | `--hub-server-intf` | Hub interface for `server-intf`, default `Mobily` |
 | `--spoke-client-intf` | Spoke interface for `client-intf`, default `wan1` |

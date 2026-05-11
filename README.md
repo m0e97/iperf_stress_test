@@ -1,24 +1,24 @@
 # FortiGate Traffic Test Runner
 
-This project contains a Python script, `main.py`, that runs FortiGate `diagnose traffictest` speed tests for multiple spokes from a CSV or Excel file. It discovers the firewall name over SSH, starts the hub as the traffic-test server, runs the spoke as the client, captures output, and writes an HTML report.
+This project contains a Python script, `main.py`, that runs FortiGate `diagnose traffictest` speed tests for multiple spokes from a CSV or Excel file. It discovers the firewall name over SSH, coordinates hub and spoke traffic-test commands, and writes an HTML report.
 
 ## What The Script Does
 
-For each spoke row, the script:
-
-1. Reads the spoke IP, hub IP, and expected speed.
-2. Connects to the spoke over SSH to discover the firewall name.
-3. Runs the hub-side `diagnose traffictest` server commands.
-4. Runs the spoke-side `diagnose traffictest` client commands.
-5. Extracts detected throughput from command output.
-6. Waits before moving to the next spoke.
-7. Generates an HTML report.
+1. Reads all rows from the input file and collects every unique hub IP.
+2. Runs the hub setup commands on all hubs **in parallel**.
+3. Starts the hub traffictest server on every hub **in parallel** (background process, one per hub).
+4. Waits for the hub servers to be ready (default 60 seconds).
+5. Groups spokes by their hub IP into per-hub queues.
+6. Runs all hub queues **in parallel** — within each queue, spokes are tested one at a time so only one spoke is active against its hub server at any moment.
+7. Each spoke test runs for a fixed duration (default 2 minutes).
+8. After all queues finish, stops every hub server.
+9. Captures spoke-side results only and generates an HTML report.
 
 ## Built-In Speed Test Commands
 
 When you do not pass `--command` or `--command-file`, the script uses the built-in FortiGate flow below.
 
-Hub commands run first:
+Hub commands run once per hub before any spoke tests:
 
 ```text
 diagnose traffictest server-intf {hub_server_intf}
@@ -26,17 +26,17 @@ diagnose traffictest port {traffictest_port}
 diagnose traffictest run -s
 ```
 
-Spoke commands run after the hub server starts:
+Spoke commands run for each spoke in its hub queue:
 
 ```text
 diagnose traffictest client-intf {spoke_client_intf}
 diagnose traffictest port {traffictest_port}
-diagnose traffictest run -b {speed_with_margin} -c {hub_ip}
+diagnose traffictest run -b {speed_with_margin} -c {hub_ip} -t {traffictest_duration}
 ```
 
-Each placeholder is filled in per row: `{hub_server_intf}`, `{spoke_client_intf}`, and `{traffictest_port}` come from the input file (see [Input File](#input-file)) or fall back to `--hub-server-intf` / `--spoke-client-intf` / `--traffictest-port`. `{speed_with_margin}` is the row's speed plus 15%, and `{hub_ip}` is the row's hub IP (or `--hub-ip` when set).
+Each placeholder is filled in per row: `{hub_server_intf}`, `{spoke_client_intf}`, and `{traffictest_port}` come from the input file (see [Input File](#input-file)) or fall back to `--hub-server-intf` / `--spoke-client-intf` / `--traffictest-port`. `{speed_with_margin}` is the row's speed plus 15%, `{hub_ip}` is the row's hub IP (or `--hub-ip` when set), and `{traffictest_duration}` is the test duration in seconds (default `120`).
 
-The hub server command is started in the background because `diagnose traffictest run -s` can stay running while it waits for the spoke client. After the spoke commands finish, the script stops and collects the hub server output.
+The hub server command is started in the background because `diagnose traffictest run -s` stays running while it waits for spoke clients. After all spoke queues finish, the script stops and discards the hub server output — only spoke-side results appear in the report.
 
 ## Requirements
 
@@ -70,7 +70,10 @@ Example CSV:
 spoke_ip,hub_ip,speed
 10.10.10.1,10.255.0.1,100M
 10.10.20.1,10.255.0.1,200M
+10.10.30.1,10.255.1.1,100M
 ```
+
+In this example the script finds two unique hubs (`10.255.0.1` and `10.255.1.1`), sets up both in parallel, then tests the first two spokes against hub 1 and the third spoke against hub 2 simultaneously.
 
 You can also provide one hub IP for all rows with `--hub-ip`.
 
@@ -172,7 +175,7 @@ python3 main.py \
 The script reads `speed` from the input file, converts it to Mbps, adds 15%, and uses that value in the spoke command:
 
 ```text
-diagnose traffictest run -b {speed_with_margin} -c {hub_ip}
+diagnose traffictest run -b {speed_with_margin} -c {hub_ip} -t {traffictest_duration}
 ```
 
 Example:
@@ -182,6 +185,10 @@ Example:
 | `100M` | `115M` |
 | `200M` | `230M` |
 | `1G` | `1150M` |
+
+## Test Duration
+
+Each spoke test runs for a fixed duration set by `--traffictest-duration` (default `120` seconds / 2 minutes). The `-t` flag is passed directly to `diagnose traffictest run` on the spoke. After the duration elapses the spoke command exits automatically and the script moves to the next spoke in the queue.
 
 ## Placeholders
 
@@ -204,11 +211,12 @@ Command templates can use these placeholders:
 | `{hub_server_intf}` | Hub server interface |
 | `{spoke_client_intf}` | Spoke client interface |
 | `{traffictest_port}` or `{traffic_port}` | Traffic-test port |
+| `{traffictest_duration}` | Test duration in seconds (default `120`) |
 | `{site_index}` | Row number, starting from 1 |
 
 ## Custom Commands
 
-If you pass `--command` or `--command-file`, the script runs your custom commands instead of the built-in FortiGate speed-test flow.
+If you pass `--command` or `--command-file`, the script runs your custom commands instead of the built-in FortiGate speed-test flow. Custom command mode runs sites sequentially.
 
 Example:
 
@@ -248,10 +256,11 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--hub-server-intf` | Hub interface for `server-intf`, default `Mobily` |
 | `--spoke-client-intf` | Spoke interface for `client-intf`, default `wan1` |
 | `--traffictest-port` | FortiGate traffictest port, default `5201` |
-| `--hub-server-start-delay` | Seconds to wait after starting hub server, default `2.0` |
+| `--traffictest-duration` | Duration in seconds for each spoke test, default `120` |
+| `--hub-server-start-delay` | Seconds to wait after starting all hub servers before running spokes, default `60.0` |
 | `--firewall-name-command` | SSH command template used to discover spoke firewall name |
 | `--firewall-name-timeout` | Timeout for firewall name discovery, default `30` seconds |
-| `--delay-seconds` | Delay between spokes, default `120` seconds |
+| `--delay-seconds` | Delay between spokes within the same hub queue, default `120` seconds |
 | `--timeout` | Timeout for each foreground command |
 | `--output` | HTML report path, default `traffic_test_report.html` |
 | `--dry-run` | Render commands and report without executing commands |
@@ -281,8 +290,9 @@ The HTML report includes:
 - Spoke IP and hub IP.
 - Configured speed.
 - Test bandwidth with 15% margin.
-- Hub and spoke command output.
-- Return codes, errors, and durations.
+- Spoke command output, return codes, errors, and durations.
+
+Hub-side command output is not included in the report.
 
 ## Troubleshooting
 

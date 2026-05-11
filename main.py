@@ -6,6 +6,7 @@ import html
 import re
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -26,7 +27,8 @@ DEFAULT_DELAY_SECONDS = 120
 DEFAULT_TRAFFICTEST_PORT = "5201"
 DEFAULT_HUB_SERVER_INTF = "Mobily"
 DEFAULT_SPOKE_CLIENT_INTF = "wan1"
-DEFAULT_HUB_SERVER_START_DELAY_SECONDS = 2.0
+DEFAULT_HUB_SERVER_START_DELAY_SECONDS = 60.0
+DEFAULT_TRAFFICTEST_DURATION_SECONDS = 120
 DEFAULT_SSH_TEMPLATE = 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {target} "{remote_command}"'
 FORTIGATE_HUB_SETUP_COMMANDS = [
     "diagnose traffictest server-intf {hub_server_intf}",
@@ -36,7 +38,7 @@ FORTIGATE_HUB_SERVER_COMMAND = "diagnose traffictest run -s"
 FORTIGATE_SPOKE_COMMANDS = [
     "diagnose traffictest client-intf {spoke_client_intf}",
     "diagnose traffictest port {traffictest_port}",
-    "diagnose traffictest run -b {speed_with_margin} -c {hub_ip}",
+    "diagnose traffictest run -b {speed_with_margin} -c {hub_ip} -t {traffictest_duration}",
 ]
 THROUGHPUT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGTP]?bits/sec)", re.IGNORECASE)
 ROLE_PATTERN = re.compile(r"\b(sender|receiver)\b", re.IGNORECASE)
@@ -845,6 +847,33 @@ def run_fortigate_traffictest_site(
     )
 
 
+def run_fortigate_spoke_only(
+    site: SiteDefinition,
+    args: argparse.Namespace,
+    name_discovery_result: CommandResult | None = None,
+) -> SiteRun:
+    started_at = datetime.now()
+    results: list[CommandResult] = []
+
+    for remote_template in FORTIGATE_SPOKE_COMMANDS:
+        command, error_result = build_ssh_command_or_error(
+            site, args.ssh_template, site.ip_address, remote_template
+        )
+        if error_result is not None:
+            results.append(error_result)
+            continue
+        results.append(run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run))
+
+    ended_at = datetime.now()
+    return SiteRun(
+        site=site,
+        started_at=started_at,
+        ended_at=ended_at,
+        command_results=results,
+        name_discovery_result=name_discovery_result,
+    )
+
+
 def summarize(results: list[SiteRun]) -> dict[str, Any]:
     total_commands = sum(len(site_run.command_results) for site_run in results)
     failed_sites = sum(1 for site_run in results if site_run.status != "success")
@@ -1237,6 +1266,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--traffictest-duration",
+        type=int,
+        default=DEFAULT_TRAFFICTEST_DURATION_SECONDS,
+        help=(
+            "Duration in seconds for each spoke traffic test (-t flag passed to "
+            f"diagnose traffictest run). Default: {DEFAULT_TRAFFICTEST_DURATION_SECONDS}."
+        ),
+    )
+    parser.add_argument(
         "--hub-server-start-delay",
         type=float,
         default=DEFAULT_HUB_SERVER_START_DELAY_SECONDS,
@@ -1304,6 +1342,7 @@ def main() -> int:
         site.placeholders["spoke_client_intf"] = site.spoke_client_intf
         site.placeholders["traffictest_port"] = site.traffictest_port
         site.placeholders["traffic_port"] = site.traffictest_port
+        site.placeholders["traffictest_duration"] = str(args.traffictest_duration)
 
     command_templates = load_command_templates(args)
     use_builtin_traffictest = not command_templates
@@ -1347,6 +1386,7 @@ def main() -> int:
             "spoke_client_intf",
             "traffictest_port",
             "traffic_port",
+            "traffictest_duration",
         }
     )
     validate_template_fields(active_command_templates, available_placeholders)
@@ -1360,27 +1400,161 @@ def main() -> int:
     runs: list[SiteRun] = []
     total_sites = len(sites)
 
-    for index, site in enumerate(sites, start=1):
-        print(f"[{index}/{total_sites}] Discovering firewall name ({site.ip_address or 'no-ip'})", flush=True)
-        name_result, discovered_name = discover_firewall_name(
-            site,
-            args.firewall_name_command,
-            timeout=args.firewall_name_timeout,
-            dry_run=args.dry_run,
-        )
-        if discovered_name:
-            set_site_display_name(site, discovered_name)
-        elif not args.dry_run:
-            print(f"  Could not discover firewall name; using fallback '{site.display_name}'.", flush=True)
+    if use_builtin_traffictest:
+        # Collect unique hub IPs in the order they first appear, with a representative site each.
+        seen_hubs: dict[str, SiteDefinition] = {}
+        for site in sites:
+            if site.hub_ip and site.hub_ip not in seen_hubs:
+                seen_hubs[site.hub_ip] = site
 
-        print(f"[{index}/{total_sites}] Running site '{site.display_name}' ({site.ip_address or 'no-ip'})", flush=True)
-        if use_builtin_traffictest:
-            site_run = run_fortigate_traffictest_site(
-                site,
-                args,
-                name_discovery_result=name_result,
+        # Setup every hub in parallel: run the two setup commands then start the server.
+        hub_contexts: dict[str, dict] = {}
+        hub_contexts_lock = threading.Lock()
+
+        def _setup_one_hub(hub_ip: str, rep_site: SiteDefinition) -> None:
+            setup_results: list[CommandResult] = []
+            for remote_template in FORTIGATE_HUB_SETUP_COMMANDS:
+                command, error_result = build_ssh_command_or_error(
+                    rep_site, args.ssh_template, hub_ip, remote_template
+                )
+                if error_result is not None:
+                    setup_results.append(error_result)
+                else:
+                    setup_results.append(
+                        run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run)
+                    )
+
+            server_initial: CommandResult | None = None
+            server_process: subprocess.Popen[str] | None = None
+            command, error_result = build_ssh_command_or_error(
+                rep_site, args.ssh_template, hub_ip, FORTIGATE_HUB_SERVER_COMMAND
             )
-        else:
+            if error_result is not None:
+                server_initial = error_result
+            else:
+                server_initial, server_process = start_background_command(
+                    FORTIGATE_HUB_SERVER_COMMAND, command, dry_run=args.dry_run
+                )
+
+            with hub_contexts_lock:
+                hub_contexts[hub_ip] = {
+                    "setup_results": setup_results,
+                    "server_initial": server_initial,
+                    "server_process": server_process,
+                }
+
+        print(f"Starting traffictest server on {len(seen_hubs)} hub(s) in parallel...", flush=True)
+        setup_threads = [
+            threading.Thread(target=_setup_one_hub, args=(hub_ip, rep_site), daemon=True)
+            for hub_ip, rep_site in seen_hubs.items()
+        ]
+        for t in setup_threads:
+            t.start()
+        for t in setup_threads:
+            t.join()
+
+        # Detect any hub server that exited before the delay (error condition).
+        for _, ctx in hub_contexts.items():
+            proc = ctx["server_process"]
+            if proc is not None and proc.poll() is not None:
+                ctx["server_initial"] = finalize_background_command(
+                    ctx["server_initial"], proc, stop_if_running=False
+                )
+                ctx["server_process"] = None
+
+        print(f"Waiting {args.hub_server_start_delay:.0f}s for all hub servers to be ready...", flush=True)
+        time.sleep(args.hub_server_start_delay)
+
+        # Group spokes by hub IP into per-hub queues, preserving the original row order.
+        hub_queues: dict[str, list[SiteDefinition]] = {hub_ip: [] for hub_ip in seen_hubs}
+        for site in sites:
+            hub_queues[site.hub_ip].append(site)
+
+        # Run each hub's queue in its own thread (hubs run in parallel; spokes per hub run
+        # sequentially so only one spoke at a time is active against each hub server).
+        all_runs: list[SiteRun] = []
+        all_runs_lock = threading.Lock()
+        print_lock = threading.Lock()
+
+        def _run_hub_queue(hub_ip: str, spoke_sites: list[SiteDefinition]) -> None:
+            queue_size = len(spoke_sites)
+            for q_index, site in enumerate(spoke_sites, start=1):
+                with print_lock:
+                    print(
+                        f"  [Hub {hub_ip}] [{q_index}/{queue_size}] Discovering name"
+                        f" ({site.ip_address or 'no-ip'})",
+                        flush=True,
+                    )
+                name_result, discovered_name = discover_firewall_name(
+                    site, args.firewall_name_command,
+                    timeout=args.firewall_name_timeout, dry_run=args.dry_run,
+                )
+                if discovered_name:
+                    set_site_display_name(site, discovered_name)
+                elif not args.dry_run:
+                    with print_lock:
+                        print(
+                            f"  [Hub {hub_ip}] Could not discover firewall name;"
+                            f" using fallback '{site.display_name}'.",
+                            flush=True,
+                        )
+
+                with print_lock:
+                    print(
+                        f"  [Hub {hub_ip}] [{q_index}/{queue_size}] Running spoke"
+                        f" '{site.display_name}' ({site.ip_address or 'no-ip'})",
+                        flush=True,
+                    )
+                site_run = run_fortigate_spoke_only(site, args, name_discovery_result=name_result)
+
+                if q_index < queue_size and args.delay_seconds:
+                    site_run.delayed_after_seconds = args.delay_seconds
+                    with print_lock:
+                        print(
+                            f"  [Hub {hub_ip}] Waiting {args.delay_seconds}s before next spoke...",
+                            flush=True,
+                        )
+                    time.sleep(args.delay_seconds)
+
+                with all_runs_lock:
+                    all_runs.append(site_run)
+
+        print(f"Running spoke tests across {len(hub_queues)} hub queue(s) in parallel...", flush=True)
+        queue_threads = [
+            threading.Thread(target=_run_hub_queue, args=(hub_ip, spoke_sites), daemon=True)
+            for hub_ip, spoke_sites in hub_queues.items()
+        ]
+        for t in queue_threads:
+            t.start()
+        for t in queue_threads:
+            t.join()
+
+        # Sort collected runs back to the original CSV/XLSX row order.
+        runs = sorted(all_runs, key=lambda r: r.site.index)
+
+        # Finalize all hub servers (stop the process and collect output), but do not
+        # attach hub results to any spoke run — only spoke-side results go in the report.
+        for _, ctx in hub_contexts.items():
+            proc = ctx["server_process"]
+            if proc is not None and ctx["server_initial"] is not None:
+                finalize_background_command(ctx["server_initial"], proc, stop_if_running=True)
+
+    else:
+        # Custom command mode: run sites sequentially.
+        for index, site in enumerate(sites, start=1):
+            print(f"[{index}/{total_sites}] Discovering firewall name ({site.ip_address or 'no-ip'})", flush=True)
+            name_result, discovered_name = discover_firewall_name(
+                site,
+                args.firewall_name_command,
+                timeout=args.firewall_name_timeout,
+                dry_run=args.dry_run,
+            )
+            if discovered_name:
+                set_site_display_name(site, discovered_name)
+            elif not args.dry_run:
+                print(f"  Could not discover firewall name; using fallback '{site.display_name}'.", flush=True)
+
+            print(f"[{index}/{total_sites}] Running site '{site.display_name}' ({site.ip_address or 'no-ip'})", flush=True)
             site_run = run_site(
                 site,
                 command_templates,
@@ -1388,12 +1562,12 @@ def main() -> int:
                 dry_run=args.dry_run,
                 name_discovery_result=name_result,
             )
-        runs.append(site_run)
+            runs.append(site_run)
 
-        if index < total_sites and args.delay_seconds:
-            site_run.delayed_after_seconds = args.delay_seconds
-            print(f"Waiting {args.delay_seconds} seconds before the next site...", flush=True)
-            time.sleep(args.delay_seconds)
+            if index < total_sites and args.delay_seconds:
+                site_run.delayed_after_seconds = args.delay_seconds
+                print(f"Waiting {args.delay_seconds} seconds before the next site...", flush=True)
+                time.sleep(args.delay_seconds)
 
     report_html = build_html_report(
         input_path=input_path,

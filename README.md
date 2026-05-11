@@ -138,10 +138,11 @@ Use `--sshuser` and `--sshpw` to supply credentials without customizing the SSH 
 python3 main.py \
   --input spokes.csv \
   --sshuser admin \
-  --sshpw mypassword
+  --sshpw
+SSH password:
 ```
 
-When `--sshpw` is provided the script automatically uses `sshpass` to supply the password non-interactively, so `sshpass` must be installed on the machine running the script. When only `--sshuser` is given, standard key-based authentication is used with the username prepended.
+`--sshpw` is a flag with no value. When present, the script pauses and prompts for the password interactively — typed characters are not displayed. The password is then passed to `sshpass` at runtime, so `sshpass` must be installed on the machine running the script. When only `--sshuser` is given, standard key-based authentication is used with the username prepended.
 
 These flags override both the built-in SSH template and the firewall name discovery command. If you need further control (custom port, identity file, etc.) use `--ssh-template` and `--firewall-name-command` directly.
 
@@ -203,7 +204,7 @@ Example:
 
 ## Test Duration
 
-Each spoke test runs for a fixed duration set by `--traffictest-duration` (default `120` seconds / 2 minutes). The `-t` flag is passed directly to `diagnose traffictest run` on the spoke. After the duration elapses the spoke command exits automatically and the script moves to the next spoke in the queue.
+Each spoke test runs for up to `--traffictest-duration` seconds (default `60` seconds / 1 minute). The `-t` flag is passed directly to `diagnose traffictest run` on the spoke. The test stops as soon as it finishes naturally or when the duration elapses, whichever comes first. The script then captures the result and moves to the next spoke in the queue.
 
 ## Placeholders
 
@@ -268,7 +269,7 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--sheet` | Worksheet name when using XLSX |
 | `--hub-ip` | One hub IP to use for all spokes |
 | `--sshuser` | SSH username prepended to every target |
-| `--sshpw` | SSH password supplied via `sshpass` |
+| `--sshpw` | Flag — prompts for SSH password invisibly, supplied via `sshpass` |
 | `--ssh-template` | SSH wrapper for built-in hub/spoke traffictest commands |
 | `--hub-server-intf` | Hub interface for `server-intf`, default `Mobily` |
 | `--spoke-client-intf` | Spoke interface for `client-intf`, default `wan1` |

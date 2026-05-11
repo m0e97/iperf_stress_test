@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import getpass
 import html
 import re
 import shlex
@@ -29,7 +30,7 @@ DEFAULT_TRAFFICTEST_PORT = "5201"
 DEFAULT_HUB_SERVER_INTF = "Mobily"
 DEFAULT_SPOKE_CLIENT_INTF = "wan1"
 DEFAULT_HUB_SERVER_START_DELAY_SECONDS = 60.0
-DEFAULT_TRAFFICTEST_DURATION_SECONDS = 120
+DEFAULT_TRAFFICTEST_DURATION_SECONDS = 60
 DEFAULT_SSH_TEMPLATE = 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {target} "{remote_command}"'
 FORTIGATE_HUB_SETUP_COMMANDS = [
     "diagnose traffictest server-intf {hub_server_intf}",
@@ -1235,7 +1236,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sshpw",
-        help="SSH password. When provided, sshpass is used to supply it non-interactively.",
+        action="store_true",
+        help="Prompt for SSH password interactively (characters are hidden). Uses sshpass to authenticate.",
     )
     parser.add_argument(
         "--hub-ip",
@@ -1337,7 +1339,8 @@ def main() -> int:
     if args.sshuser or args.sshpw:
         user_at = f"{args.sshuser}@" if args.sshuser else ""
         if args.sshpw:
-            ssh_base = f"sshpass -p {shlex.quote(args.sshpw)} ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+            password = getpass.getpass("SSH password: ")
+            ssh_base = f"sshpass -p {shlex.quote(password)} ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
         else:
             ssh_base = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
         args.ssh_template = f'{ssh_base} {user_at}{{target}} "{{remote_command}}"'

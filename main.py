@@ -49,10 +49,10 @@ DEFAULT_HUB_SERVER_START_DELAY_SECONDS = 60.0
 DEFAULT_TRAFFICTEST_DURATION_SECONDS = 60
 DEFAULT_SSH_TEMPLATE = 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {target} "{remote_command}"'
 FORTIGATE_HUB_SETUP_COMMANDS = [
-    "diagnose traffictest server-intf {hub_server_intf}",
-    "diagnose traffictest port {traffictest_port}",
+    "config global\ndiagnose traffictest server-intf {hub_server_intf}",
+    "config global\ndiagnose traffictest port {traffictest_port}",
 ]
-FORTIGATE_HUB_SERVER_COMMAND = "diagnose traffictest run -s"
+FORTIGATE_HUB_SERVER_COMMAND = "config global\ndiagnose traffictest run -s"
 FORTIGATE_SPOKE_COMMANDS = [
     "diagnose traffictest client-intf {spoke_client_intf}",
     "diagnose traffictest port {traffictest_port}",

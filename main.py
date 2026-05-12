@@ -60,6 +60,13 @@ FORTIGATE_SPOKE_COMMANDS = [
 ]
 THROUGHPUT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGTP]?bits/sec)", re.IGNORECASE)
 ROLE_PATTERN = re.compile(r"\b(sender|receiver)\b", re.IGNORECASE)
+# iperf3 summary line: [ 7]  0.00-10.02  sec  4.02 MBytes  3.37 Mbits/sec  72  sender
+_IPERF3_SUMMARY_RE = re.compile(
+    r"\[\s*\d+\]\s+[\d.]+-[\d.]+\s+sec\s+[\d.]+\s+\S+Bytes\s+"
+    r"(\d+(?:\.\d+)?)\s*([KMGTP]?bits/sec)"
+    r"(?:\s+(\d+))?\s*(sender|receiver)",
+    re.IGNORECASE,
+)
 NUMBER_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _FORTIGATE_PROMPT_RE = re.compile(r"[#$]\s*$", re.MULTILINE)
@@ -147,6 +154,7 @@ class CommandResult:
     error: str | None = None
     throughput_mbps: float | None = None
     throughput_label: str | None = None
+    retransmissions: int | None = None
 
     @property
     def duration_seconds(self) -> float:
@@ -447,14 +455,7 @@ def validate_template_fields(templates: list[str], available_keys: set[str]) -> 
         raise ValueError(f"Missing columns/placeholders: {missing}. Available placeholders: {available}")
 
 
-def extract_throughput(output: str) -> tuple[float | None, str | None]:
-    matches = list(THROUGHPUT_PATTERN.finditer(output))
-    if not matches:
-        return None, None
-
-    chosen = matches[-1]
-    value = float(chosen.group(1))
-    unit = chosen.group(2).lower()
+def extract_throughput(output: str) -> tuple[float | None, str | None, int | None]:
     multipliers = {
         "bits/sec": 1 / 1_000_000,
         "kbits/sec": 1 / 1_000,
@@ -463,13 +464,34 @@ def extract_throughput(output: str) -> tuple[float | None, str | None]:
         "tbits/sec": 1_000_000.0,
         "pbits/sec": 1_000_000_000.0,
     }
+
+    summary_matches = list(_IPERF3_SUMMARY_RE.finditer(output))
+    if summary_matches:
+        receiver = next((m for m in summary_matches if m.group(4).lower() == "receiver"), None)
+        sender = next((m for m in summary_matches if m.group(4).lower() == "sender"), None)
+        chosen = receiver or sender or summary_matches[-1]
+        value = float(chosen.group(1))
+        unit = chosen.group(2).lower()
+        role = chosen.group(4).lower()
+        throughput_mbps = value * multipliers[unit]
+        label = f"{value:g} {chosen.group(2)} ({role})"
+        retransmissions = int(sender.group(3)) if sender and sender.group(3) else None
+        return throughput_mbps, label, retransmissions
+
+    # Fall back to last generic bits/sec match (non-iperf3 output)
+    matches = list(THROUGHPUT_PATTERN.finditer(output))
+    if not matches:
+        return None, None, None
+    chosen = matches[-1]
+    value = float(chosen.group(1))
+    unit = chosen.group(2).lower()
     throughput_mbps = value * multipliers[unit]
     nearby_text = output[max(0, chosen.start() - 60): min(len(output), chosen.end() + 60)]
     role_match = ROLE_PATTERN.search(nearby_text)
     label = f"{value:g} {chosen.group(2)}"
     if role_match:
         label = f"{label} ({role_match.group(1).lower()})"
-    return throughput_mbps, label
+    return throughput_mbps, label, None
 
 
 def clean_firewall_name(value: str) -> str | None:
@@ -545,7 +567,7 @@ def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResu
     )
     ended_at = datetime.now()
     combined_output = "\n".join(part for part in [completed.stdout, completed.stderr] if part)
-    throughput_mbps, throughput_label = extract_throughput(combined_output)
+    throughput_mbps, throughput_label, retransmissions = extract_throughput(combined_output)
     return CommandResult(
         template=command,
         command=command,
@@ -556,6 +578,7 @@ def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResu
         stderr=completed.stderr,
         throughput_mbps=throughput_mbps,
         throughput_label=throughput_label,
+        retransmissions=retransmissions,
     )
 
 
@@ -693,7 +716,7 @@ def finalize_background_command(
         )
 
     combined_output = "\n".join(part for part in [stdout, stderr] if part)
-    throughput_mbps, throughput_label = extract_throughput(combined_output)
+    throughput_mbps, throughput_label, retransmissions = extract_throughput(combined_output)
     return CommandResult(
         template=initial_result.template,
         command=initial_result.command,
@@ -704,6 +727,7 @@ def finalize_background_command(
         stderr=stderr,
         throughput_mbps=throughput_mbps,
         throughput_label=throughput_label,
+        retransmissions=retransmissions,
     )
 
 
@@ -820,12 +844,13 @@ def _paramiko_exec(
             return_code=None, stdout="", stderr="", error=str(exc),
         )
     ended_at = datetime.now()
-    throughput_mbps, throughput_label = extract_throughput(stdout)
+    throughput_mbps, throughput_label, retransmissions = extract_throughput(stdout)
     return CommandResult(
         template=template, command=cmd_label,
         started_at=started_at, ended_at=ended_at,
         return_code=rc, stdout=stdout, stderr="",
         throughput_mbps=throughput_mbps, throughput_label=throughput_label,
+        retransmissions=retransmissions,
     )
 
 
@@ -1244,6 +1269,7 @@ def build_html_report(
                   <div><strong>Started:</strong> {started}</div>
                   <div><strong>Duration:</strong> {duration}</div>
                   <div><strong>Detected Throughput:</strong> {throughput}</div>
+                  {retr_line}
                   <pre>{output}</pre>
                 </div>
                 """.format(
@@ -1255,6 +1281,10 @@ def build_html_report(
                     started=html.escape(format_timestamp(result.started_at)),
                     duration=html.escape(format_seconds(result.duration_seconds)),
                     throughput=html.escape(result.throughput_label or "N/A"),
+                    retr_line=(
+                        f'<div><strong>Retransmissions:</strong> {result.retransmissions}</div>'
+                        if result.retransmissions is not None else ""
+                    ),
                     output=html.escape(output_text),
                 )
             )

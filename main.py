@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
+import ctypes.wintypes
 import getpass
 import html
+import msvcrt
 import re
 import shlex
 import subprocess
@@ -18,6 +21,19 @@ from string import Formatter
 from typing import Any
 from xml.etree import ElementTree as ET
 
+_PARAMIKO_IMPORT_ERROR: str = ""
+try:
+    import paramiko as _paramiko_lib
+    _PARAMIKO_OK = True
+except Exception as _e:
+    _paramiko_lib = None  # type: ignore[assignment]
+    _PARAMIKO_OK = False
+    _PARAMIKO_IMPORT_ERROR = str(_e)
+
+_use_paramiko: bool = False
+_paramiko_user: str = ""
+_paramiko_pass: str = ""
+
 
 NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -25,7 +41,7 @@ NS = {
     "pkg": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
 
-DEFAULT_DELAY_SECONDS = 120
+DEFAULT_DELAY_SECONDS = 0
 DEFAULT_TRAFFICTEST_PORT = "5201"
 DEFAULT_HUB_SERVER_INTF = "Mobily"
 DEFAULT_SPOKE_CLIENT_INTF = "wan1"
@@ -46,11 +62,18 @@ THROUGHPUT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGTP]?bits/sec)", re.IGNO
 ROLE_PATTERN = re.compile(r"\b(sender|receiver)\b", re.IGNORECASE)
 NUMBER_PATTERN = re.compile(r"(\d+(?:\.\d+)?)")
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_FORTIGATE_PROMPT_RE = re.compile(r"[#$]\s*$", re.MULTILINE)
+_FORTIGATE_BANNER_RE = re.compile(
+    r"press\s+['\"]?a['\"]?|type\s+['\"]?a['\"]?|accept.*disclaimer|disclaimer.*accept"
+    r"|you\s+agree|acknowledge|post.?logon",
+    re.IGNORECASE,
+)
 FIREWALL_NAME_PATTERNS = [
     re.compile(r"^\s*hostname\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*system\s+name\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*sysname\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*device\s+name\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
+    re.compile(r"""^\s*set\s+hostname\s+["']?(?P<name>[^"'\s]+)["']?\s*$""", re.IGNORECASE),
 ]
 NAME_ALIASES = {"name", "site", "site_name", "spoke", "spoke_name", "branch"}
 DISCOVERED_NAME_KEYS = NAME_ALIASES | {"firewall_name", "hostname", "device_name"}
@@ -673,6 +696,215 @@ def finalize_background_command(
     )
 
 
+class _ParamikoHandle:
+    """Drop-in for subprocess.Popen so finalize_background_command works unchanged."""
+
+    def __init__(self) -> None:
+        self._stdout_parts: list[str] = []
+        self._stderr_parts: list[str] = []
+        self._done = threading.Event()
+        self._shell: Any = None
+        self._client: Any = None
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode if self._done.is_set() else None
+
+    def terminate(self) -> None:
+        for obj in (self._shell, self._client):
+            if obj is not None:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+
+    def kill(self) -> None:
+        self.terminate()
+
+    def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+        self._done.wait(timeout=timeout)
+        return "".join(self._stdout_parts), "".join(self._stderr_parts)
+
+
+def _paramiko_connect(host: str, timeout: int | None) -> Any:
+    client = _paramiko_lib.SSHClient()
+    client.set_missing_host_key_policy(_paramiko_lib.AutoAddPolicy())
+    client.connect(host, username=_paramiko_user, password=_paramiko_pass, timeout=timeout or 10)
+    return client
+
+
+def _shell_recv_chunk(shell: Any) -> str:
+    if shell.recv_ready():
+        return shell.recv(4096).decode(errors="replace")
+    return ""
+
+
+def _shell_read_until_prompt(shell: Any, timeout: float) -> str:
+    output = ""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        chunk = _shell_recv_chunk(shell)
+        if chunk:
+            output += chunk
+            if _FORTIGATE_PROMPT_RE.search(ANSI_ESCAPE_PATTERN.sub("", output)):
+                return output
+        else:
+            time.sleep(0.05)
+    return output
+
+
+def _paramiko_open_shell(client: Any, timeout: int | None) -> Any:
+    """Open an interactive FortiGate shell and accept the post-logon banner if present."""
+    shell = client.invoke_shell(width=220, height=50)
+    shell.settimeout(timeout or 30)
+    # Collect initial output for up to 5 s (banner, MOTD, etc.)
+    initial = ""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        chunk = _shell_recv_chunk(shell)
+        if chunk:
+            initial += chunk
+        else:
+            time.sleep(0.1)
+        clean = ANSI_ESCAPE_PATTERN.sub("", initial)
+        if _FORTIGATE_PROMPT_RE.search(clean):
+            return shell  # prompt already visible — no banner
+        if _FORTIGATE_BANNER_RE.search(clean):
+            # Banner requires pressing 'a' to accept
+            shell.send("a\n")
+            _shell_read_until_prompt(shell, timeout=timeout or 30)
+            return shell
+    return shell
+
+
+def _paramiko_exec(
+    host: str,
+    remote_command: str,
+    template: str,
+    timeout: int | None,
+    dry_run: bool,
+) -> CommandResult:
+    cmd_label = f"[paramiko] {_paramiko_user}@{host}: {remote_command}"
+    started_at = datetime.now()
+    if dry_run:
+        return CommandResult(
+            template=template, command=cmd_label,
+            started_at=started_at, ended_at=datetime.now(),
+            return_code=0, stdout="dry-run: command not executed", stderr="",
+        )
+    try:
+        client = _paramiko_connect(host, timeout)
+        shell = _paramiko_open_shell(client, timeout)
+        shell.send(remote_command + "\n")
+        raw = _shell_read_until_prompt(shell, timeout=timeout or 60)
+        shell.close()
+        client.close()
+        stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
+        rc = 0
+    except Exception as exc:
+        ended_at = datetime.now()
+        return CommandResult(
+            template=template, command=cmd_label,
+            started_at=started_at, ended_at=ended_at,
+            return_code=None, stdout="", stderr="", error=str(exc),
+        )
+    ended_at = datetime.now()
+    throughput_mbps, throughput_label = extract_throughput(stdout)
+    return CommandResult(
+        template=template, command=cmd_label,
+        started_at=started_at, ended_at=ended_at,
+        return_code=rc, stdout=stdout, stderr="",
+        throughput_mbps=throughput_mbps, throughput_label=throughput_label,
+    )
+
+
+def _paramiko_start_background(
+    host: str,
+    remote_command: str,
+    template: str,
+    dry_run: bool,
+) -> tuple[CommandResult, _ParamikoHandle | None]:
+    cmd_label = f"[paramiko] {_paramiko_user}@{host}: {remote_command}"
+    started_at = datetime.now()
+    if dry_run:
+        return (
+            CommandResult(
+                template=template, command=cmd_label,
+                started_at=started_at, ended_at=datetime.now(),
+                return_code=0, stdout="dry-run: background command not executed", stderr="",
+            ),
+            None,
+        )
+    handle = _ParamikoHandle()
+
+    def _run() -> None:
+        try:
+            client = _paramiko_connect(host, timeout=None)
+            shell = _paramiko_open_shell(client, timeout=30)
+            handle._shell = shell
+            handle._client = client
+            shell.send(remote_command + "\n")
+            while not getattr(shell, "closed", False):
+                chunk = _shell_recv_chunk(shell)
+                if chunk:
+                    handle._stdout_parts.append(chunk)
+                else:
+                    time.sleep(0.1)
+        except Exception as exc:
+            handle._stderr_parts.append(str(exc))
+            handle.returncode = 1
+        finally:
+            handle.returncode = handle.returncode if handle.returncode is not None else 0
+            handle._done.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return (
+        CommandResult(
+            template=template, command=cmd_label,
+            started_at=started_at, ended_at=started_at,
+            return_code=None, stdout="Hub server command started via Paramiko.", stderr="",
+        ),
+        handle,
+    )
+
+
+def _exec_ssh(
+    site: SiteDefinition,
+    target: str,
+    remote_template: str,
+    ssh_template: str,
+    timeout: int | None,
+    dry_run: bool,
+) -> CommandResult:
+    if _use_paramiko:
+        command, error = render_command_or_error(remote_template, site)
+        if error is not None:
+            return error
+        return _paramiko_exec(target, command, remote_template, timeout, dry_run)
+    command, error = build_ssh_command_or_error(site, ssh_template, target, remote_template)
+    if error is not None:
+        return error
+    return run_rendered_command(remote_template, command, timeout=timeout, dry_run=dry_run)
+
+
+def _exec_ssh_background(
+    site: SiteDefinition,
+    target: str,
+    remote_template: str,
+    ssh_template: str,
+    dry_run: bool,
+) -> tuple[CommandResult, subprocess.Popen[str] | _ParamikoHandle | None]:
+    if _use_paramiko:
+        command, error = render_command_or_error(remote_template, site)
+        if error is not None:
+            return error, None
+        return _paramiko_start_background(target, command, remote_template, dry_run)
+    command, error = build_ssh_command_or_error(site, ssh_template, target, remote_template)
+    if error is not None:
+        return error, None
+    return start_background_command(remote_template, command, dry_run=dry_run)
+
+
 def set_site_display_name(site: SiteDefinition, display_name: str) -> None:
     site.display_name = display_name
     for key in DISCOVERED_NAME_KEYS:
@@ -745,11 +977,14 @@ def discover_firewall_name(
     timeout: int | None,
     dry_run: bool,
 ) -> tuple[CommandResult, str | None]:
-    command, error_result = render_command_or_error(command_template, site)
-    if error_result is not None:
-        return error_result, None
+    if _use_paramiko:
+        result = _paramiko_exec(site.ip_address, "get system status", "get system status", timeout, dry_run)
+    else:
+        command, error_result = render_command_or_error(command_template, site)
+        if error_result is not None:
+            return error_result, None
+        result = run_rendered_command(command_template, command, timeout=timeout, dry_run=dry_run)
 
-    result = run_rendered_command(command_template, command, timeout=timeout, dry_run=dry_run)
     if result.error or dry_run:
         return result, None
 
@@ -858,13 +1093,9 @@ def run_fortigate_spoke_only(
     results: list[CommandResult] = []
 
     for remote_template in FORTIGATE_SPOKE_COMMANDS:
-        command, error_result = build_ssh_command_or_error(
-            site, args.ssh_template, site.ip_address, remote_template
+        results.append(
+            _exec_ssh(site, site.ip_address, remote_template, args.ssh_template, args.timeout, args.dry_run)
         )
-        if error_result is not None:
-            results.append(error_result)
-            continue
-        results.append(run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run))
 
     ended_at = datetime.now()
     return SiteRun(
@@ -1242,7 +1473,32 @@ def build_argument_parser() -> argparse.ArgumentParser:
         metavar="PASSWORD",
         help=(
             "SSH password. Supply it directly as a value, or pass the flag with no value "
-            "to be prompted interactively with hidden characters. Uses sshpass to authenticate."
+            "to be prompted interactively with hidden characters. Uses sshpass on Linux/macOS "
+            "and plink on Windows (see --plink)."
+        ),
+    )
+    parser.add_argument(
+        "--plink",
+        nargs="?",
+        const="plink",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Use PuTTY plink instead of ssh/sshpass. Optionally supply the full path to "
+            "plink.exe; omit the value to use 'plink' from PATH. When combined with "
+            "--sshpw, passes -pw to plink instead of using sshpass. "
+            "Note: host keys must be pre-accepted in PuTTY's registry cache before "
+            "running in batch mode."
+        ),
+    )
+    parser.add_argument(
+        "--paramiko",
+        action="store_true",
+        default=False,
+        help=(
+            "Use the Paramiko Python library for SSH instead of external binaries. "
+            "Requires: pip install paramiko. Recommended on Windows where sshpass/plink "
+            "are unavailable or blocked by group policy."
         ),
     )
     parser.add_argument(
@@ -1325,6 +1581,48 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _read_password_hidden(prompt: str) -> str:
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    # Try to disable echo via Windows console API (works in real consoles and
+    # ConPTY terminals such as Windows Terminal or VSCode integrated terminal).
+    kernel32 = ctypes.windll.kernel32
+    h_stdin = kernel32.GetStdHandle(-10)
+    old_mode = ctypes.wintypes.DWORD()
+    echo_disabled = bool(
+        kernel32.GetConsoleMode(h_stdin, ctypes.byref(old_mode))
+        and kernel32.SetConsoleMode(h_stdin, old_mode.value & ~0x0004)
+    )
+    if not echo_disabled:
+        # stdin is a pipe or IDE console (PyCharm run panel, etc.) — just use
+        # plain input; characters will be visible.
+        return input()
+    try:
+        chars: list[str] = []
+        while True:
+            ch = msvcrt.getwch()
+            if ch in ("\r", "\n"):
+                break
+            if ch == "\x03":
+                raise KeyboardInterrupt
+            if ch == "\x08":
+                if chars:
+                    chars.pop()
+                    sys.stderr.write("\b \b")
+                    sys.stderr.flush()
+            else:
+                chars.append(ch)
+                sys.stderr.write("*")
+                sys.stderr.flush()
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        return "".join(chars)
+    except Exception:
+        return input()
+    finally:
+        kernel32.SetConsoleMode(h_stdin, old_mode.value)
+
+
 def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     print("=" * 60)
     print("FortiGate Traffic Test Runner — Interactive Mode")
@@ -1338,7 +1636,14 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     username = input("SSH username (leave blank to skip): ").strip()
     if username:
         args.sshuser = username
-    password = getpass.getpass("SSH password (leave blank to skip): ")
+    plink_path = input("plink.exe path (leave blank to use standard ssh): ").strip().strip('"').strip("'")
+    if plink_path:
+        args.plink = plink_path
+    if not args.plink:
+        use_paramiko_answer = input("Use Paramiko for SSH? Needed on Windows without ssh/plink [y/N]: ").strip().lower()
+        if use_paramiko_answer == "y":
+            args.paramiko = True
+    password = _read_password_hidden("SSH password (leave blank to skip): ")
     if password:
         args.sshpw = password
 
@@ -1363,15 +1668,33 @@ def main() -> int:
     if args.hub_server_start_delay < 0:
         parser.error("--hub-server-start-delay must be 0 or greater.")
 
-    if args.sshuser or args.sshpw is not None:
-        user_at = f"{args.sshuser}@" if args.sshuser else ""
+    if args.paramiko or args.plink or args.sshuser or args.sshpw is not None:
+        password: str | None = None
         if args.sshpw is not None:
             password = getpass.getpass("SSH password: ") if args.sshpw is True else args.sshpw
-            ssh_base = f"sshpass -p {shlex.quote(password)} ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+
+        if args.paramiko:
+            if not _PARAMIKO_OK:
+                detail = f" (import error: {_PARAMIKO_IMPORT_ERROR})" if _PARAMIKO_IMPORT_ERROR else ""
+                parser.error(
+                    f"--paramiko requires Paramiko. Install it with: pip install paramiko{detail}\n"
+                    f"  Running interpreter: {sys.executable}"
+                )
+            global _use_paramiko, _paramiko_user, _paramiko_pass
+            _use_paramiko = True
+            _paramiko_user = args.sshuser or ""
+            _paramiko_pass = password or ""
         else:
-            ssh_base = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
-        args.ssh_template = f'{ssh_base} {user_at}{{target}} "{{remote_command}}"'
-        args.firewall_name_command = f'{ssh_base} {user_at}{{spoke_ip}} "get system status"'
+            user_at = f"{args.sshuser}@" if args.sshuser else ""
+            if args.plink:
+                pw_part = f" -pw {shlex.quote(password)}" if password else ""
+                ssh_base = f"{shlex.quote(args.plink)} -batch -ssh{pw_part}"
+            elif password:
+                ssh_base = f"sshpass -p {shlex.quote(password)} ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+            else:
+                ssh_base = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+            args.ssh_template = f'{ssh_base} {user_at}{{target}} "{{remote_command}}"'
+            args.firewall_name_command = f'{ssh_base} {user_at}{{spoke_ip}} "get system status"'
 
     rows = load_rows(input_path, args.sheet)
     if not rows:
@@ -1439,7 +1762,7 @@ def main() -> int:
     )
     validate_template_fields(active_command_templates, available_placeholders)
     validate_template_fields([args.firewall_name_command], available_placeholders)
-    if use_builtin_traffictest:
+    if use_builtin_traffictest and not _use_paramiko:
         validate_template_fields(
             [args.ssh_template],
             available_placeholders | {"target", "remote_command"},
@@ -1462,27 +1785,13 @@ def main() -> int:
         def _setup_one_hub(hub_ip: str, rep_site: SiteDefinition) -> None:
             setup_results: list[CommandResult] = []
             for remote_template in FORTIGATE_HUB_SETUP_COMMANDS:
-                command, error_result = build_ssh_command_or_error(
-                    rep_site, args.ssh_template, hub_ip, remote_template
+                setup_results.append(
+                    _exec_ssh(rep_site, hub_ip, remote_template, args.ssh_template, args.timeout, args.dry_run)
                 )
-                if error_result is not None:
-                    setup_results.append(error_result)
-                else:
-                    setup_results.append(
-                        run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run)
-                    )
 
-            server_initial: CommandResult | None = None
-            server_process: subprocess.Popen[str] | None = None
-            command, error_result = build_ssh_command_or_error(
-                rep_site, args.ssh_template, hub_ip, FORTIGATE_HUB_SERVER_COMMAND
+            server_initial, server_process = _exec_ssh_background(
+                rep_site, hub_ip, FORTIGATE_HUB_SERVER_COMMAND, args.ssh_template, args.dry_run
             )
-            if error_result is not None:
-                server_initial = error_result
-            else:
-                server_initial, server_process = start_background_command(
-                    FORTIGATE_HUB_SERVER_COMMAND, command, dry_run=args.dry_run
-                )
 
             with hub_contexts_lock:
                 hub_contexts[hub_ip] = {

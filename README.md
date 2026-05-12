@@ -157,6 +157,28 @@ The password is passed to `sshpass` at runtime, so `sshpass` must be installed o
 
 These flags override both the built-in SSH template and the firewall name discovery command. If you need further control (custom port, identity file, etc.) use `--ssh-template` and `--firewall-name-command` directly.
 
+## Pure-Python SSH (Paramiko)
+
+If external executables such as `ssh` or `sshpass` are blocked by group policy, use `--paramiko` to connect entirely through the Paramiko library (no external processes):
+
+```bash
+python3 main.py \
+  --input spokes.csv \
+  --sshuser admin \
+  --sshpw \
+  --paramiko
+```
+
+Install Paramiko in the same Python environment as the script:
+
+```bash
+pip install paramiko
+```
+
+### Post-Logon Banner
+
+Some FortiGate devices display a disclaimer banner immediately after login. When `--paramiko` is used, the script detects the banner automatically and sends `a` to accept it before running any commands. No manual intervention is needed.
+
 ## SSH Username Or Options
 
 The built-in FortiGate speed-test commands use this SSH wrapper by default:
@@ -281,6 +303,7 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--hub-ip` | One hub IP to use for all spokes |
 | `--sshuser` | SSH username prepended to every target |
 | `--sshpw [PASSWORD]` | SSH password as a value, or omit the value to be prompted invisibly |
+| `--paramiko` | Use Paramiko (pure-Python SSH) instead of external `ssh`/`sshpass` executables |
 | `--ssh-template` | SSH wrapper for built-in hub/spoke traffictest commands |
 | `--hub-server-intf` | Hub interface for `server-intf`, default `Mobily` |
 | `--spoke-client-intf` | Spoke interface for `client-intf`, default `wan1` |
@@ -289,7 +312,7 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--hub-server-start-delay` | Seconds to wait after starting all hub servers before running spokes, default `60.0` |
 | `--firewall-name-command` | SSH command template used to discover spoke firewall name |
 | `--firewall-name-timeout` | Timeout for firewall name discovery, default `30` seconds |
-| `--delay-seconds` | Delay between spokes within the same hub queue, default `120` seconds |
+| `--delay-seconds` | Delay between spokes within the same hub queue, default `0` seconds |
 | `--timeout` | Timeout for each foreground command |
 | `--output` | HTML report path, default `traffic_test_report.html` |
 | `--dry-run` | Render commands and report without executing commands |

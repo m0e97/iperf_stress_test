@@ -68,6 +68,13 @@ _FORTIGATE_BANNER_RE = re.compile(
     r"|you\s+agree|acknowledge|post.?logon",
     re.IGNORECASE,
 )
+# iperf3 / traffictest errors that FortiGate reports in stdout with exit code 0
+_IPERF_ERROR_RE = re.compile(
+    r"iperf3?\s*:\s*error|unable\s+to\s+connect|network\s+is\s+unreachable"
+    r"|connection\s+refused|connection\s+timed?\s*out|no\s+route\s+to\s+host"
+    r"|failed\s+to\s+(connect|send|receive)",
+    re.IGNORECASE,
+)
 FIREWALL_NAME_PATTERNS = [
     re.compile(r"^\s*hostname\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*system\s+name\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
@@ -150,6 +157,8 @@ class CommandResult:
         if self.error:
             return "template-error"
         if self.return_code == 0:
+            if _IPERF_ERROR_RE.search(self.stdout) or _IPERF_ERROR_RE.search(self.stderr):
+                return "failed"
             return "success"
         return "failed"
 

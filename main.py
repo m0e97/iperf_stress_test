@@ -1175,12 +1175,58 @@ def format_peak(value: float | None) -> str:
     return f"{value:.2f} Mbps"
 
 
+def _render_command_block(result: CommandResult, heading: str = "Template") -> str:
+    output_text = "\n".join(
+        section
+        for section in [
+            f"STDOUT:\n{result.stdout.strip()}" if result.stdout.strip() else "",
+            f"STDERR:\n{result.stderr.strip()}" if result.stderr.strip() else "",
+            f"ERROR:\n{result.error}" if result.error else "",
+        ]
+        if section
+    ) or "No output captured."
+    throughput_line = (
+        f'<div><strong>Detected Throughput:</strong> {html.escape(result.throughput_label)}</div>'
+        if result.throughput_label is not None else ""
+    )
+    retr_line = (
+        f'<div><strong>Retransmissions:</strong> {result.retransmissions}</div>'
+        if result.retransmissions is not None else ""
+    )
+    return """
+        <div class="command-block">
+          <div><strong>{heading}:</strong> <code>{template}</code></div>
+          <div><strong>Command:</strong> <code>{command}</code></div>
+          <div><strong>Status:</strong> <span class="{status_class}">{status}</span></div>
+          <div><strong>Return Code:</strong> {return_code}</div>
+          <div><strong>Started:</strong> {started}</div>
+          <div><strong>Duration:</strong> {duration}</div>
+          {throughput_line}
+          {retr_line}
+          <pre>{output}</pre>
+        </div>
+        """.format(
+        heading=html.escape(heading),
+        template=html.escape(result.template),
+        command=html.escape(result.command or "N/A"),
+        status=html.escape(result.status),
+        status_class=html.escape(result.status),
+        return_code=html.escape(str(result.return_code) if result.return_code is not None else "N/A"),
+        started=html.escape(format_timestamp(result.started_at)),
+        duration=html.escape(format_seconds(result.duration_seconds)),
+        throughput_line=throughput_line,
+        retr_line=retr_line,
+        output=html.escape(output_text),
+    )
+
+
 def build_html_report(
     input_path: Path,
     output_path: Path,
     results: list[SiteRun],
     command_templates: list[str],
     delay_seconds: int,
+    hub_results: dict[str, dict] | None = None,
 ) -> str:
     summary = summarize(results)
     created_at = datetime.now()
@@ -1220,74 +1266,9 @@ def build_html_report(
 
         command_blocks: list[str] = []
         if site_run.name_discovery_result is not None:
-            result = site_run.name_discovery_result
-            discovery_output = "\n".join(
-                section
-                for section in [
-                    f"STDOUT:\n{result.stdout.strip()}" if result.stdout.strip() else "",
-                    f"STDERR:\n{result.stderr.strip()}" if result.stderr.strip() else "",
-                    f"ERROR:\n{result.error}" if result.error else "",
-                ]
-                if section
-            ) or "No output captured."
-
-            command_blocks.append(
-                """
-                <div class="command-block">
-                  <div><strong>Firewall Name Discovery:</strong> <code>{command}</code></div>
-                  <div><strong>Status:</strong> <span class="{status_class}">{status}</span></div>
-                  <div><strong>Return Code:</strong> {return_code}</div>
-                  <pre>{output}</pre>
-                </div>
-                """.format(
-                    command=html.escape(result.command or "N/A"),
-                    status=html.escape(result.status),
-                    status_class=html.escape(result.status),
-                    return_code=html.escape(str(result.return_code) if result.return_code is not None else "N/A"),
-                    output=html.escape(discovery_output),
-                )
-            )
-
+            command_blocks.append(_render_command_block(site_run.name_discovery_result, "Firewall Name Discovery"))
         for result in site_run.command_results:
-            output_text = "\n".join(
-                section
-                for section in [
-                    f"STDOUT:\n{result.stdout.strip()}" if result.stdout.strip() else "",
-                    f"STDERR:\n{result.stderr.strip()}" if result.stderr.strip() else "",
-                    f"ERROR:\n{result.error}" if result.error else "",
-                ]
-                if section
-            ) or "No output captured."
-
-            command_blocks.append(
-                """
-                <div class="command-block">
-                  <div><strong>Template:</strong> <code>{template}</code></div>
-                  <div><strong>Command:</strong> <code>{command}</code></div>
-                  <div><strong>Status:</strong> <span class="{status_class}">{status}</span></div>
-                  <div><strong>Return Code:</strong> {return_code}</div>
-                  <div><strong>Started:</strong> {started}</div>
-                  <div><strong>Duration:</strong> {duration}</div>
-                  <div><strong>Detected Throughput:</strong> {throughput}</div>
-                  {retr_line}
-                  <pre>{output}</pre>
-                </div>
-                """.format(
-                    template=html.escape(result.template),
-                    command=html.escape(result.command or "N/A"),
-                    status=html.escape(result.status),
-                    status_class=html.escape(result.status),
-                    return_code=html.escape(str(result.return_code) if result.return_code is not None else "N/A"),
-                    started=html.escape(format_timestamp(result.started_at)),
-                    duration=html.escape(format_seconds(result.duration_seconds)),
-                    throughput=html.escape(result.throughput_label or "N/A"),
-                    retr_line=(
-                        f'<div><strong>Retransmissions:</strong> {result.retransmissions}</div>'
-                        if result.retransmissions is not None else ""
-                    ),
-                    output=html.escape(output_text),
-                )
-            )
+            command_blocks.append(_render_command_block(result))
 
         details_html.append(
             """
@@ -1315,6 +1296,26 @@ def build_html_report(
                 ended=html.escape(format_timestamp(site_run.ended_at)),
                 delay=site_run.delayed_after_seconds,
                 commands="\n".join(command_blocks),
+            )
+        )
+
+    hub_cards_html: list[str] = []
+    for hub_ip, ctx in (hub_results or {}).items():
+        hub_blocks: list[str] = []
+        for r in ctx.get("setup_results", []):
+            hub_blocks.append(_render_command_block(r, "Hub Setup"))
+        server_result: CommandResult | None = ctx.get("server_result")
+        if server_result is not None:
+            hub_blocks.append(_render_command_block(server_result, "Hub Server"))
+        hub_cards_html.append(
+            """
+            <section class="site-card">
+              <h2>Hub: {hub_ip}</h2>
+              {commands}
+            </section>
+            """.format(
+                hub_ip=html.escape(hub_ip),
+                commands="\n".join(hub_blocks),
             )
         )
 
@@ -1460,6 +1461,7 @@ def build_html_report(
       </table>
     </section>
 
+    {"".join(hub_cards_html)}
     {"".join(details_html)}
   </main>
 </body>
@@ -1810,6 +1812,7 @@ def main() -> int:
         )
 
     runs: list[SiteRun] = []
+    hub_contexts: dict[str, dict] = {}
     total_sites = len(sites)
 
     if use_builtin_traffictest:
@@ -1820,7 +1823,6 @@ def main() -> int:
                 seen_hubs[site.hub_ip] = site
 
         # Setup every hub in parallel: run the two setup commands then start the server.
-        hub_contexts: dict[str, dict] = {}
         hub_contexts_lock = threading.Lock()
 
         def _setup_one_hub(hub_ip: str, rep_site: SiteDefinition) -> None:
@@ -1946,12 +1948,16 @@ def main() -> int:
         # Sort collected runs back to the original CSV/XLSX row order.
         runs = sorted(all_runs, key=lambda r: r.site.index)
 
-        # Finalize all hub servers (stop the process and collect output), but do not
-        # attach hub results to any spoke run — only spoke-side results go in the report.
+        # Finalize all hub servers (stop the process and collect output).
         for _, ctx in hub_contexts.items():
             proc = ctx["server_process"]
             if proc is not None and ctx["server_initial"] is not None:
-                finalize_background_command(ctx["server_initial"], proc, stop_if_running=True)
+                ctx["server_result"] = finalize_background_command(
+                    ctx["server_initial"], proc, stop_if_running=True
+                )
+                ctx["server_process"] = None
+            else:
+                ctx["server_result"] = ctx.get("server_initial")
 
     else:
         # Custom command mode: run sites sequentially.
@@ -1989,6 +1995,7 @@ def main() -> int:
         results=runs,
         command_templates=active_command_templates,
         delay_seconds=args.delay_seconds,
+        hub_results=hub_contexts,
     )
     output_path.write_text(report_html, encoding="utf-8")
 

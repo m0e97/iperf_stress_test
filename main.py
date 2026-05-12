@@ -93,6 +93,7 @@ NAME_ALIASES = {"name", "site", "site_name", "spoke", "spoke_name", "branch"}
 DISCOVERED_NAME_KEYS = NAME_ALIASES | {"firewall_name", "hostname", "device_name"}
 IP_ALIASES = {"ip", "host", "address", "spoke_ip", "branch_ip", "wan_ip"}
 HUB_IP_ALIASES = {"hub_ip", "hub", "hub_host", "hub_address", "hub_wan_ip"}
+HUB_MGMT_IP_ALIASES = {"hub_mgmt_ip", "hub_management_ip", "hub_ssh_ip", "hub_admin_ip", "hub_mgmt"}
 SPEED_ALIASES = {
     "speed",
     "rate",
@@ -137,6 +138,7 @@ class SiteDefinition:
     speed_mbps: float | None
     speed_with_margin_mbps: float | None
     speed_with_margin_label: str
+    hub_mgmt_ip: str = ""
     hub_server_intf: str = ""
     spoke_client_intf: str = ""
     traffictest_port: str = ""
@@ -382,12 +384,15 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
 
         ip_address = find_first_value(placeholders, IP_ALIASES)
         hub_ip = find_first_value(placeholders, HUB_IP_ALIASES)
+        hub_mgmt_ip = find_first_value(placeholders, HUB_MGMT_IP_ALIASES)
         display_name = ip_address or f"spoke-{index}"
         for key in DISCOVERED_NAME_KEYS:
             placeholders[key] = display_name
         if hub_ip:
             placeholders.setdefault("hub_ip", hub_ip)
             placeholders.setdefault("hub", hub_ip)
+        if hub_mgmt_ip:
+            placeholders.setdefault("hub_mgmt_ip", hub_mgmt_ip)
         speed = find_first_value(placeholders, SPEED_ALIASES)
         hub_server_intf = find_first_value(placeholders, HUB_SERVER_INTF_ALIASES)
         spoke_client_intf = find_first_value(placeholders, SPOKE_CLIENT_INTF_ALIASES)
@@ -412,6 +417,7 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
                 display_name=display_name,
                 ip_address=ip_address,
                 hub_ip=hub_ip,
+                hub_mgmt_ip=hub_mgmt_ip,
                 speed=speed,
                 speed_mbps=speed_mbps,
                 speed_with_margin_mbps=speed_with_margin_mbps,
@@ -1307,14 +1313,21 @@ def build_html_report(
         server_result: CommandResult | None = ctx.get("server_result")
         if server_result is not None:
             hub_blocks.append(_render_command_block(server_result, "Hub Server"))
+        ssh_target = ctx.get("ssh_target") or hub_ip
+        mgmt_line = (
+            f'<p><strong>Management IP (SSH):</strong> {html.escape(ssh_target)}</p>'
+            if ssh_target != hub_ip else ""
+        )
         hub_cards_html.append(
             """
             <section class="site-card">
               <h2>Hub: {hub_ip}</h2>
+              {mgmt_line}
               {commands}
             </section>
             """.format(
                 hub_ip=html.escape(hub_ip),
+                mgmt_line=mgmt_line,
                 commands="\n".join(hub_blocks),
             )
         )
@@ -1546,7 +1559,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--hub-ip",
-        help="Hub firewall IP address. If omitted, each input row must provide a hub_ip column.",
+        help="Hub firewall IP address used by spokes for iperf3. If omitted, each row must provide a hub_ip column.",
+    )
+    parser.add_argument(
+        "--hub-mgmt-ip",
+        help=(
+            "Hub management IP address used for SSH (setup and server commands). "
+            "Falls back to hub_ip when omitted. Can also be set per row with a hub_mgmt_ip column."
+        ),
     )
     parser.add_argument(
         "--ssh-template",
@@ -1749,6 +1769,9 @@ def main() -> int:
             site.hub_ip = args.hub_ip
             site.placeholders["hub_ip"] = args.hub_ip
             site.placeholders["hub"] = args.hub_ip
+        if args.hub_mgmt_ip:
+            site.hub_mgmt_ip = args.hub_mgmt_ip
+            site.placeholders["hub_mgmt_ip"] = args.hub_mgmt_ip
         site.hub_server_intf = site.hub_server_intf or args.hub_server_intf
         site.spoke_client_intf = site.spoke_client_intf or args.spoke_client_intf
         site.traffictest_port = site.traffictest_port or str(args.traffictest_port)
@@ -1826,21 +1849,30 @@ def main() -> int:
         hub_contexts_lock = threading.Lock()
 
         def _setup_one_hub(hub_ip: str, rep_site: SiteDefinition) -> None:
+            ssh_target = rep_site.hub_mgmt_ip or hub_ip
             setup_results: list[CommandResult] = []
+            connection_failed = False
             for remote_template in FORTIGATE_HUB_SETUP_COMMANDS:
-                setup_results.append(
-                    _exec_ssh(rep_site, hub_ip, remote_template, args.ssh_template, args.timeout, args.dry_run)
-                )
+                result = _exec_ssh(rep_site, ssh_target, remote_template, args.ssh_template, args.timeout, args.dry_run)
+                setup_results.append(result)
+                if result.error:
+                    connection_failed = True
+                    break
 
-            server_initial, server_process = _exec_ssh_background(
-                rep_site, hub_ip, FORTIGATE_HUB_SERVER_COMMAND, args.ssh_template, args.dry_run
-            )
+            server_initial: CommandResult | None = None
+            server_process = None
+            if not connection_failed:
+                server_initial, server_process = _exec_ssh_background(
+                    rep_site, ssh_target, FORTIGATE_HUB_SERVER_COMMAND, args.ssh_template, args.dry_run
+                )
 
             with hub_contexts_lock:
                 hub_contexts[hub_ip] = {
+                    "ssh_target": ssh_target,
                     "setup_results": setup_results,
                     "server_initial": server_initial,
                     "server_process": server_process,
+                    "failed": connection_failed,
                 }
 
         print(f"Starting traffictest server on {len(seen_hubs)} hub(s) in parallel...", flush=True)
@@ -1877,6 +1909,19 @@ def main() -> int:
         print_lock = threading.Lock()
 
         def _run_hub_queue(hub_ip: str, spoke_sites: list[SiteDefinition]) -> None:
+            ctx = hub_contexts.get(hub_ip, {})
+            if ctx.get("failed") and not args.dry_run:
+                with print_lock:
+                    print(
+                        f"  [Hub {hub_ip}] Hub setup failed — skipping all {len(spoke_sites)} spoke(s).",
+                        flush=True,
+                    )
+                now = datetime.now()
+                with all_runs_lock:
+                    for site in spoke_sites:
+                        all_runs.append(SiteRun(site=site, started_at=now, ended_at=now))
+                return
+
             queue_size = len(spoke_sites)
             for q_index, site in enumerate(spoke_sites, start=1):
                 with print_lock:

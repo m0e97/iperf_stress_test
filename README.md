@@ -61,7 +61,8 @@ The script recognizes these column names, case-insensitively after normalizing s
 | Purpose | Accepted Column Names |
 | --- | --- |
 | Spoke IP | `ip`, `host`, `address`, `spoke_ip`, `branch_ip`, `wan_ip` |
-| Hub IP | `hub_ip`, `hub`, `hub_host`, `hub_address`, `hub_wan_ip` |
+| Hub IP (iperf3 target) | `hub_ip`, `hub`, `hub_host`, `hub_address`, `hub_wan_ip` |
+| Hub Management IP (SSH) | `hub_mgmt_ip`, `hub_management_ip`, `hub_ssh_ip`, `hub_admin_ip`, `hub_mgmt` |
 | Speed | `speed`, `rate`, `bandwidth`, `expected_speed`, `speed_mbps`, `bandwidth_mbps` |
 | Hub server interface | `server_intf`, `hub_server_intf`, `hub_intf`, `hub_interface`, `server_interface` |
 | Spoke client interface | `client_intf`, `spoke_client_intf`, `spoke_intf`, `spoke_interface`, `client_interface`, `wan_intf`, `wan_interface` |
@@ -305,7 +306,8 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | --- | --- |
 | `--input` | Required CSV or XLSX input file |
 | `--sheet` | Worksheet name when using XLSX |
-| `--hub-ip` | One hub IP to use for all spokes |
+| `--hub-ip` | Hub IP for iperf3 (spoke target). If omitted, each row must have a `hub_ip` column |
+| `--hub-mgmt-ip` | Hub management IP for SSH (setup commands). Falls back to `hub_ip` when omitted |
 | `--sshuser` | SSH username prepended to every target |
 | `--sshpw [PASSWORD]` | SSH password as a value, or omit the value to be prompted invisibly |
 | `--paramiko` | Use Paramiko (pure-Python SSH) instead of external `ssh`/`sshpass` executables |

@@ -771,6 +771,9 @@ def _paramiko_connect(host: str, timeout: int | None) -> Any:
     client = _paramiko_lib.SSHClient()
     client.set_missing_host_key_policy(_paramiko_lib.AutoAddPolicy())
     client.connect(host, username=_paramiko_user, password=_paramiko_pass, timeout=timeout or 10)
+    transport = client.get_transport()
+    if transport is not None:
+        transport.set_keepalive(30)  # send SSH keepalive every 30 s to prevent idle disconnect
     return client
 
 
@@ -1006,6 +1009,9 @@ def _paramiko_hub_session(
 
     def _read_server() -> None:
         try:
+            # Remove the per-operation timeout so the shell stays open
+            # indefinitely while waiting for spoke clients.
+            shell.settimeout(None)
             shell.send(server_cmd_str + "\n")
             while not getattr(shell, "closed", False):
                 chunk = _shell_recv_chunk(shell)

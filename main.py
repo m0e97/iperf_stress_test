@@ -49,10 +49,10 @@ DEFAULT_HUB_SERVER_START_DELAY_SECONDS = 60.0
 DEFAULT_TRAFFICTEST_DURATION_SECONDS = 60
 DEFAULT_SSH_TEMPLATE = 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {target} "{remote_command}"'
 FORTIGATE_HUB_SETUP_COMMANDS = [
-    "config global\ndiagnose traffictest server-intf {hub_server_intf}",
-    "config global\ndiagnose traffictest port {traffictest_port}",
+    "diagnose traffictest server-intf {hub_server_intf}",
+    "diagnose traffictest port {traffictest_port}",
 ]
-FORTIGATE_HUB_SERVER_COMMAND = "config global\ndiagnose traffictest run -s"
+FORTIGATE_HUB_SERVER_COMMAND = "diagnose traffictest run -s"
 FORTIGATE_SPOKE_COMMANDS = [
     "diagnose traffictest client-intf {spoke_client_intf}",
     "diagnose traffictest port {traffictest_port}",
@@ -908,6 +908,125 @@ def _paramiko_start_background(
         ),
         handle,
     )
+
+
+def _paramiko_hub_session(
+    ssh_target: str,
+    rep_site: SiteDefinition,
+    setup_templates: list[str],
+    server_template: str,
+    timeout: int | None,
+    dry_run: bool,
+) -> tuple[list[CommandResult], CommandResult, "_ParamikoHandle | None"]:
+    """Run all hub commands in one Paramiko shell, entering global VDOM once."""
+    cmd_prefix = f"[paramiko] {_paramiko_user}@{ssh_target}: "
+
+    if dry_run:
+        now = datetime.now()
+        setup_results = [
+            CommandResult(
+                template=t, command=cmd_prefix + render_template(t, rep_site),
+                started_at=now, ended_at=now,
+                return_code=0, stdout="dry-run: command not executed", stderr="",
+            )
+            for t in setup_templates
+        ]
+        server_cmd_str = render_template(server_template, rep_site)
+        server_initial = CommandResult(
+            template=server_template, command=cmd_prefix + server_cmd_str,
+            started_at=now, ended_at=now,
+            return_code=0, stdout="dry-run: background command not executed", stderr="",
+        )
+        return setup_results, server_initial, None
+
+    try:
+        client = _paramiko_connect(ssh_target, timeout)
+        shell = _paramiko_open_shell(client, timeout)
+    except Exception as exc:
+        now = datetime.now()
+        err_result = CommandResult(
+            template=setup_templates[0] if setup_templates else server_template,
+            command=cmd_prefix + "(connect)",
+            started_at=now, ended_at=now,
+            return_code=None, stdout="", stderr="", error=str(exc),
+        )
+        return [err_result], err_result, None
+
+    # Enter global VDOM once for the entire session.
+    shell.send("config global\n")
+    _shell_read_until_prompt(shell, timeout=timeout or 30)
+
+    setup_results: list[CommandResult] = []
+    connection_failed = False
+    for template in setup_templates:
+        rendered = render_template(template, rep_site)
+        cmd_label = cmd_prefix + rendered
+        started_at = datetime.now()
+        try:
+            shell.send(rendered + "\n")
+            raw = _shell_read_until_prompt(shell, timeout=timeout or 60)
+            stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
+            ended_at = datetime.now()
+            setup_results.append(CommandResult(
+                template=template, command=cmd_label,
+                started_at=started_at, ended_at=ended_at,
+                return_code=0, stdout=stdout, stderr="",
+            ))
+        except Exception as exc:
+            ended_at = datetime.now()
+            setup_results.append(CommandResult(
+                template=template, command=cmd_label,
+                started_at=started_at, ended_at=ended_at,
+                return_code=None, stdout="", stderr="", error=str(exc),
+            ))
+            connection_failed = True
+            break
+
+    if connection_failed:
+        try:
+            shell.close()
+            client.close()
+        except Exception:
+            pass
+        server_initial = CommandResult(
+            template=server_template, command=cmd_prefix + server_template,
+            started_at=datetime.now(), ended_at=datetime.now(),
+            return_code=None, stdout="", stderr="",
+            error="Skipped — hub setup failed.",
+        )
+        return setup_results, server_initial, None
+
+    # Start the server command on the same shell in a background thread.
+    server_cmd_str = render_template(server_template, rep_site)
+    cmd_label = cmd_prefix + server_cmd_str
+    started_at = datetime.now()
+    handle = _ParamikoHandle()
+    handle._shell = shell
+    handle._client = client
+
+    def _read_server() -> None:
+        try:
+            shell.send(server_cmd_str + "\n")
+            while not getattr(shell, "closed", False):
+                chunk = _shell_recv_chunk(shell)
+                if chunk:
+                    handle._stdout_parts.append(chunk)
+                else:
+                    time.sleep(0.1)
+        except Exception as exc:
+            handle._stderr_parts.append(str(exc))
+            handle.returncode = 1
+        finally:
+            handle.returncode = handle.returncode if handle.returncode is not None else 0
+            handle._done.set()
+
+    threading.Thread(target=_read_server, daemon=True).start()
+    server_initial = CommandResult(
+        template=server_template, command=cmd_label,
+        started_at=started_at, ended_at=started_at,
+        return_code=None, stdout="Hub server started in global VDOM via Paramiko.", stderr="",
+    )
+    return setup_results, server_initial, handle
 
 
 def _exec_ssh(
@@ -1850,21 +1969,58 @@ def main() -> int:
 
         def _setup_one_hub(hub_ip: str, rep_site: SiteDefinition) -> None:
             ssh_target = rep_site.hub_mgmt_ip or hub_ip
-            setup_results: list[CommandResult] = []
-            connection_failed = False
-            for remote_template in FORTIGATE_HUB_SETUP_COMMANDS:
-                result = _exec_ssh(rep_site, ssh_target, remote_template, args.ssh_template, args.timeout, args.dry_run)
-                setup_results.append(result)
-                if result.error:
-                    connection_failed = True
-                    break
 
-            server_initial: CommandResult | None = None
-            server_process = None
-            if not connection_failed:
-                server_initial, server_process = _exec_ssh_background(
-                    rep_site, ssh_target, FORTIGATE_HUB_SERVER_COMMAND, args.ssh_template, args.dry_run
+            if _use_paramiko:
+                # One shell session: config global once, then all commands.
+                setup_results, server_initial, server_process = _paramiko_hub_session(
+                    ssh_target, rep_site,
+                    FORTIGATE_HUB_SETUP_COMMANDS, FORTIGATE_HUB_SERVER_COMMAND,
+                    args.timeout, args.dry_run,
                 )
+                connection_failed = any(r.error for r in setup_results) or (
+                    server_initial is not None and server_initial.error == "Skipped — hub setup failed."
+                )
+            else:
+                # Subprocess: each SSH call is a fresh session, so prepend
+                # "config global" transparently to the remote command.
+                setup_results = []
+                connection_failed = False
+                for template in FORTIGATE_HUB_SETUP_COMMANDS:
+                    result = _exec_ssh(
+                        rep_site, ssh_target,
+                        "config global\n" + template,
+                        args.ssh_template, args.timeout, args.dry_run,
+                    )
+                    # Report uses the clean template, not the prefixed one.
+                    result = CommandResult(
+                        template=template, command=result.command,
+                        started_at=result.started_at, ended_at=result.ended_at,
+                        return_code=result.return_code,
+                        stdout=result.stdout, stderr=result.stderr,
+                        error=result.error,
+                    )
+                    setup_results.append(result)
+                    if result.error:
+                        connection_failed = True
+                        break
+
+                server_initial = None
+                server_process = None
+                if not connection_failed:
+                    server_initial, server_process = _exec_ssh_background(
+                        rep_site, ssh_target,
+                        "config global\n" + FORTIGATE_HUB_SERVER_COMMAND,
+                        args.ssh_template, args.dry_run,
+                    )
+                    if server_initial is not None:
+                        server_initial = CommandResult(
+                            template=FORTIGATE_HUB_SERVER_COMMAND,
+                            command=server_initial.command,
+                            started_at=server_initial.started_at, ended_at=server_initial.ended_at,
+                            return_code=server_initial.return_code,
+                            stdout=server_initial.stdout, stderr=server_initial.stderr,
+                            error=server_initial.error,
+                        )
 
             with hub_contexts_lock:
                 hub_contexts[hub_ip] = {

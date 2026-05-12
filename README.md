@@ -18,16 +18,12 @@ This project contains a Python script, `main.py`, that runs FortiGate `diagnose 
 
 When you do not pass `--command` or `--command-file`, the script uses the built-in FortiGate flow below.
 
-Hub commands run once per hub before any spoke tests (executed in the global VDOM context):
+Hub commands run once per hub before any spoke tests, all within a single SSH session. `config global` is entered once at login before any commands run:
 
 ```text
 config global
 diagnose traffictest server-intf {hub_server_intf}
-
-config global
 diagnose traffictest port {traffictest_port}
-
-config global
 diagnose traffictest run -s
 ```
 

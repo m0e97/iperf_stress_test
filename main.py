@@ -1199,7 +1199,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run FortiGate hub/spoke traffictest commands sequentially from CSV/XLSX input and generate an HTML report."
     )
-    parser.add_argument("--input", required=True, help="Path to a CSV or XLSX file containing spoke data.")
+    parser.add_argument("--input", default=None, help="Path to a CSV or XLSX file containing spoke data.")
     parser.add_argument("--sheet", help="Worksheet name to read when the input file is XLSX.")
     parser.add_argument(
         "--command",
@@ -1325,9 +1325,30 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def prompt_interactive_inputs(args: argparse.Namespace) -> None:
+    print("=" * 60)
+    print("FortiGate Traffic Test Runner — Interactive Mode")
+    print("=" * 60)
+    while True:
+        raw = input("Input file path (CSV or XLSX): ").strip().strip('"').strip("'")
+        if raw:
+            args.input = raw
+            break
+        print("  File path cannot be empty.")
+    username = input("SSH username (leave blank to skip): ").strip()
+    if username:
+        args.sshuser = username
+    password = getpass.getpass("SSH password (leave blank to skip): ")
+    if password:
+        args.sshpw = password
+
+
 def main() -> int:
     parser = build_argument_parser()
     args = parser.parse_args()
+
+    if args.input is None:
+        prompt_interactive_inputs(args)
 
     input_path = Path(args.input).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()

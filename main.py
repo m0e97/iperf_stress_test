@@ -179,6 +179,8 @@ class SiteRun:
     @property
     def status(self) -> str:
         if not self.command_results:
+            if self.name_discovery_result and self.name_discovery_result.error:
+                return "failed"
             return "skipped"
         if any(result.status != "success" for result in self.command_results):
             return "failed"
@@ -1865,13 +1867,29 @@ def main() -> int:
                             flush=True,
                         )
 
-                with print_lock:
-                    print(
-                        f"  [Hub {hub_ip}] [{q_index}/{queue_size}] Running spoke"
-                        f" '{site.display_name}' ({site.ip_address or 'no-ip'})",
-                        flush=True,
+                if name_result.error and not args.dry_run:
+                    with print_lock:
+                        print(
+                            f"  [Hub {hub_ip}] [{q_index}/{queue_size}] Skipping spoke"
+                            f" '{site.display_name}' ({site.ip_address or 'no-ip'})"
+                            f" — SSH connection failed: {name_result.error}",
+                            flush=True,
+                        )
+                    now = datetime.now()
+                    site_run = SiteRun(
+                        site=site,
+                        started_at=now,
+                        ended_at=now,
+                        name_discovery_result=name_result,
                     )
-                site_run = run_fortigate_spoke_only(site, args, name_discovery_result=name_result)
+                else:
+                    with print_lock:
+                        print(
+                            f"  [Hub {hub_ip}] [{q_index}/{queue_size}] Running spoke"
+                            f" '{site.display_name}' ({site.ip_address or 'no-ip'})",
+                            flush=True,
+                        )
+                    site_run = run_fortigate_spoke_only(site, args, name_discovery_result=name_result)
 
                 if q_index < queue_size and args.delay_seconds:
                     site_run.delayed_after_seconds = args.delay_seconds

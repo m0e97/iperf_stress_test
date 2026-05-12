@@ -307,6 +307,7 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--sshuser` | SSH username prepended to every target |
 | `--sshpw [PASSWORD]` | SSH password as a value, or omit the value to be prompted invisibly |
 | `--paramiko` | Use Paramiko (pure-Python SSH) instead of external `ssh`/`sshpass` executables |
+| `--skip-hub-setup` | Skip all hub SSH commands; assumes the hub traffictest server is already running |
 | `--ssh-template` | SSH wrapper for built-in hub/spoke traffictest commands |
 | `--hub-server-intf` | Hub interface for `server-intf`, default `Mobily` |
 | `--spoke-client-intf` | Spoke interface for `client-intf`, default `wan1` |

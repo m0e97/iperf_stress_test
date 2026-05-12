@@ -1762,6 +1762,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="HTML report output path. Default: traffic_test_report.html",
     )
     parser.add_argument(
+        "--skip-hub-setup",
+        action="store_true",
+        help=(
+            "Skip all hub SSH commands (config global, server-intf, port, run -s). "
+            "Use this when you have already started the hub traffictest server manually. "
+            "The script will run only the spoke-side test commands."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Render commands and report without executing the traffic tests.",
@@ -1834,6 +1843,9 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     password = _read_password_hidden("SSH password (leave blank to skip): ")
     if password:
         args.sshpw = password
+    skip_hub_answer = input("Hub traffictest server already running? Skip hub setup? [y/N]: ").strip().lower()
+    if skip_hub_answer == "y":
+        args.skip_hub_setup = True
 
 
 def main() -> int:
@@ -1970,8 +1982,14 @@ def main() -> int:
             if site.hub_ip and site.hub_ip not in seen_hubs:
                 seen_hubs[site.hub_ip] = site
 
-        # Setup every hub in parallel: run the two setup commands then start the server.
-        hub_contexts_lock = threading.Lock()
+        # Group spokes by hub IP into per-hub queues, preserving the original row order.
+        hub_queues: dict[str, list[SiteDefinition]] = {hub_ip: [] for hub_ip in seen_hubs}
+        for site in sites:
+            hub_queues[site.hub_ip].append(site)
+
+        if not args.skip_hub_setup:
+            # Setup every hub in parallel: run the two setup commands then start the server.
+            hub_contexts_lock = threading.Lock()
 
         def _setup_one_hub(hub_ip: str, rep_site: SiteDefinition) -> None:
             ssh_target = rep_site.hub_mgmt_ip or hub_ip
@@ -2037,32 +2055,30 @@ def main() -> int:
                     "failed": connection_failed,
                 }
 
-        print(f"Starting traffictest server on {len(seen_hubs)} hub(s) in parallel...", flush=True)
-        setup_threads = [
-            threading.Thread(target=_setup_one_hub, args=(hub_ip, rep_site), daemon=True)
-            for hub_ip, rep_site in seen_hubs.items()
-        ]
-        for t in setup_threads:
-            t.start()
-        for t in setup_threads:
-            t.join()
+        if not args.skip_hub_setup:
+            print(f"Starting traffictest server on {len(seen_hubs)} hub(s) in parallel...", flush=True)
+            setup_threads = [
+                threading.Thread(target=_setup_one_hub, args=(hub_ip, rep_site), daemon=True)
+                for hub_ip, rep_site in seen_hubs.items()
+            ]
+            for t in setup_threads:
+                t.start()
+            for t in setup_threads:
+                t.join()
 
-        # Detect any hub server that exited before the delay (error condition).
-        for _, ctx in hub_contexts.items():
-            proc = ctx["server_process"]
-            if proc is not None and proc.poll() is not None:
-                ctx["server_initial"] = finalize_background_command(
-                    ctx["server_initial"], proc, stop_if_running=False
-                )
-                ctx["server_process"] = None
+            # Detect any hub server that exited before the delay (error condition).
+            for _, ctx in hub_contexts.items():
+                proc = ctx["server_process"]
+                if proc is not None and proc.poll() is not None:
+                    ctx["server_initial"] = finalize_background_command(
+                        ctx["server_initial"], proc, stop_if_running=False
+                    )
+                    ctx["server_process"] = None
 
-        print(f"Waiting {args.hub_server_start_delay:.0f}s for all hub servers to be ready...", flush=True)
-        time.sleep(args.hub_server_start_delay)
-
-        # Group spokes by hub IP into per-hub queues, preserving the original row order.
-        hub_queues: dict[str, list[SiteDefinition]] = {hub_ip: [] for hub_ip in seen_hubs}
-        for site in sites:
-            hub_queues[site.hub_ip].append(site)
+            print(f"Waiting {args.hub_server_start_delay:.0f}s for all hub servers to be ready...", flush=True)
+            time.sleep(args.hub_server_start_delay)
+        else:
+            print("Hub setup skipped — assuming hub traffictest server is already running.", flush=True)
 
         # Run each hub's queue in its own thread (hubs run in parallel; spokes per hub run
         # sequentially so only one spoke at a time is active against each hub server).
@@ -2155,16 +2171,17 @@ def main() -> int:
         # Sort collected runs back to the original CSV/XLSX row order.
         runs = sorted(all_runs, key=lambda r: r.site.index)
 
-        # Finalize all hub servers (stop the process and collect output).
-        for _, ctx in hub_contexts.items():
-            proc = ctx["server_process"]
-            if proc is not None and ctx["server_initial"] is not None:
-                ctx["server_result"] = finalize_background_command(
-                    ctx["server_initial"], proc, stop_if_running=True
-                )
-                ctx["server_process"] = None
-            else:
-                ctx["server_result"] = ctx.get("server_initial")
+        if not args.skip_hub_setup:
+            # Finalize all hub servers (stop the process and collect output).
+            for _, ctx in hub_contexts.items():
+                proc = ctx["server_process"]
+                if proc is not None and ctx["server_initial"] is not None:
+                    ctx["server_result"] = finalize_background_command(
+                        ctx["server_initial"], proc, stop_if_running=True
+                    )
+                    ctx["server_process"] = None
+                else:
+                    ctx["server_result"] = ctx.get("server_initial")
 
     else:
         # Custom command mode: run sites sequentially.

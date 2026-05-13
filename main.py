@@ -1386,20 +1386,27 @@ def build_html_report(
     details_html: list[str] = []
 
     for site_run in results:
+        sender_mbps = site_run.max_sender_throughput_mbps
+        speed_mbps = site_run.site.speed_mbps
+        if sender_mbps is not None and speed_mbps is not None and sender_mbps >= 0.95 * speed_mbps:
+            result_label, result_class = "Pass", "success"
+        elif sender_mbps is None:
+            result_label, result_class = "Fail (not reachable)", "failed"
+        else:
+            result_label, result_class = "Fail (insufficient speed)", "failed"
+
         rows_html.append(
             """
             <tr>
               <td>{index}</td>
               <td>{name}</td>
+              <td>{speed}</td>
               <td>{ip}</td>
               <td>{hub_ip}</td>
-              <td>{speed}</td>
-              <td>{test_speed}</td>
-              <td><span class="badge {status_class}">{status}</span></td>
               <td>{sender}</td>
-              <td>{receiver}</td>
+              <td>{test_speed}</td>
               <td>{started}</td>
-              <td>{duration}</td>
+              <td><span class="badge {result_class}">{result_label}</span></td>
             </tr>
             """.format(
                 index=site_run.site.index,
@@ -1408,12 +1415,10 @@ def build_html_report(
                 hub_ip=html.escape(site_run.site.hub_ip or "N/A"),
                 speed=html.escape(site_run.site.speed or "N/A"),
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
-                status=html.escape(site_run.status),
-                status_class=html.escape(site_run.status),
-                sender=html.escape(format_peak(site_run.max_sender_throughput_mbps)),
-                receiver=html.escape(format_peak(site_run.max_receiver_throughput_mbps)),
+                sender=html.escape(format_peak(sender_mbps)),
                 started=html.escape(format_timestamp(site_run.started_at)),
-                duration=html.escape(format_seconds(site_run.duration_seconds)),
+                result_label=result_label,
+                result_class=result_class,
             )
         )
 
@@ -1617,16 +1622,14 @@ def build_html_report(
         <thead>
           <tr>
             <th>#</th>
-            <th>Firewall</th>
+            <th>Site name</th>
+            <th>Speed</th>
             <th>IP</th>
             <th>Hub IP</th>
-            <th>Speed</th>
-            <th>Test Bandwidth</th>
-            <th>Status</th>
-            <th>Sender</th>
-            <th>Receiver</th>
+            <th>Actual bandwidth</th>
+            <th>Generated traffic</th>
             <th>Started</th>
-            <th>Duration</th>
+            <th>Result</th>
           </tr>
         </thead>
         <tbody>

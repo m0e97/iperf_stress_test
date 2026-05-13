@@ -1901,10 +1901,16 @@ def _make_speedometer_icon_b64() -> str:
     return base64.b64encode(png).decode()
 
 
+_ICON_B64: str | None = None
+
+
 def _apply_window_icon(root: Any) -> None:
+    global _ICON_B64
     try:
         import tkinter as tk
-        img = tk.PhotoImage(data=_make_speedometer_icon_b64())
+        if _ICON_B64 is None:
+            _ICON_B64 = _make_speedometer_icon_b64()
+        img = tk.PhotoImage(data=_ICON_B64)
         root.iconphoto(True, img)
         root._icon_img = img  # keep a reference so GC doesn't collect it
     except Exception:

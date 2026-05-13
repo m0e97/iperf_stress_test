@@ -1812,6 +1812,105 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_speedometer_icon_b64() -> str:
+    """Generate a 32×32 speedometer PNG icon and return it as a base64 string (stdlib only)."""
+    import base64
+    import math
+    import struct
+    import zlib
+
+    W = H = 32
+    px: list[list[tuple[int, int, int, int]]] = [[(0, 0, 0, 0)] * W for _ in range(H)]
+
+    def setp(x: int, y: int, r: int, g: int, b: int, a: int = 255) -> None:
+        if 0 <= x < W and 0 <= y < H:
+            px[y][x] = (r, g, b, a)
+
+    cx, cy = 16, 17
+
+    # Dark navy background circle
+    for y in range(H):
+        for x in range(W):
+            if (x - cx) ** 2 + (y - cy) ** 2 <= 14 ** 2:
+                setp(x, y, 20, 40, 75)
+
+    # Thin lighter-blue outer ring
+    for y in range(H):
+        for x in range(W):
+            d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+            if 13.2 <= d <= 14.5:
+                setp(x, y, 70, 110, 170)
+
+    # bearing_to_screen: 0° = up (12 o'clock), clockwise
+    def bxy(bearing: float, radius: float) -> tuple[float, float]:
+        rad = math.radians(bearing)
+        return cx + radius * math.sin(rad), cy - radius * math.cos(rad)
+
+    START = 240   # bearing: lower-left (8 o'clock) = 0 speed
+    SPAN  = 240   # degrees clockwise to lower-right (4 o'clock) = full speed
+
+    # Light-blue arc
+    for step in range(SPAN + 1):
+        bx, by = bxy((START + step) % 360, 10.5)
+        ix, iy = int(round(bx)), int(round(by))
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                nx, ny = ix + dx, iy + dy
+                d = ((nx - cx) ** 2 + (ny - cy) ** 2) ** 0.5
+                if 9.5 <= d <= 12.0:
+                    setp(nx, ny, 150, 200, 240)
+
+    # 5 white tick marks at 0 / 25 / 50 / 75 / 100 %
+    for pct in (0, 25, 50, 75, 100):
+        brg = (START + pct * SPAN // 100) % 360
+        ox, oy = bxy(brg, 8.0)
+        ix2, iy2 = bxy(brg, 11.5)
+        for s in range(9):
+            t = s / 8
+            setp(int(round(ox + t * (ix2 - ox))), int(round(oy + t * (iy2 - oy))), 255, 255, 255)
+
+    # Orange needle at 75 % (2 o'clock = fast)
+    needle_brg = (START + int(0.75 * SPAN)) % 360
+    nx2, ny2 = bxy(needle_brg, 8.5)
+    for s in range(13):
+        t = s / 12
+        lx = int(round(cx + t * (nx2 - cx)))
+        ly = int(round(cy + t * (ny2 - cy)))
+        setp(lx, ly, 255, 140, 0)
+        setp(lx, ly - 1, 255, 140, 0)  # one extra pixel for thickness
+
+    # Orange center dot
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            if dx * dx + dy * dy <= 4:
+                setp(cx + dx, cy + dy, 255, 160, 0)
+
+    # Encode as PNG (RGBA, 8-bit, no interlace)
+    def png_chunk(tag: bytes, data: bytes) -> bytes:
+        payload = tag + data
+        return struct.pack(">I", len(data)) + payload + struct.pack(">I", zlib.crc32(payload) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)
+    raw = b"".join(b"\x00" + bytes([c for rgba in row for c in rgba]) for row in px)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", ihdr)
+        + png_chunk(b"IDAT", zlib.compress(raw, 9))
+        + png_chunk(b"IEND", b"")
+    )
+    return base64.b64encode(png).decode()
+
+
+def _apply_window_icon(root: Any) -> None:
+    try:
+        import tkinter as tk
+        img = tk.PhotoImage(data=_make_speedometer_icon_b64())
+        root.iconphoto(True, img)
+        root._icon_img = img  # keep a reference so GC doesn't collect it
+    except Exception:
+        pass
+
+
 class _TeeWriter:
     """Forwards writes to both the original stream and a queue (line-buffered for the GUI)."""
 
@@ -1848,6 +1947,7 @@ def _show_progress_window(target_fn: "Any") -> int:
         root.geometry("800x500")
         root.configure(bg="#1e1e1e")
         root.attributes("-topmost", True)
+        _apply_window_icon(root)
 
         tk.Label(
             root, text="FortiGate Traffic Test Runner",
@@ -1927,6 +2027,7 @@ def _show_inputs_dialog(default_file: str) -> tuple[str, str, str] | None:
         root.title("FortiGate Traffic Test Runner")
         root.resizable(False, False)
         root.attributes("-topmost", True)
+        _apply_window_icon(root)
 
         pad: dict = {"padx": 10, "pady": 6}
 

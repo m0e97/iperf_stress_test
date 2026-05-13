@@ -157,6 +157,8 @@ class CommandResult:
     throughput_mbps: float | None = None
     throughput_label: str | None = None
     retransmissions: int | None = None
+    sender_throughput_mbps: float | None = None
+    receiver_throughput_mbps: float | None = None
 
     @property
     def duration_seconds(self) -> float:
@@ -198,14 +200,18 @@ class SiteRun:
 
     @property
     def max_throughput_mbps(self) -> float | None:
-        values = [
-            result.throughput_mbps
-            for result in self.command_results
-            if result.throughput_mbps is not None
-        ]
-        if not values:
-            return None
-        return max(values)
+        values = [r.throughput_mbps for r in self.command_results if r.throughput_mbps is not None]
+        return max(values) if values else None
+
+    @property
+    def max_sender_throughput_mbps(self) -> float | None:
+        values = [r.sender_throughput_mbps for r in self.command_results if r.sender_throughput_mbps is not None]
+        return max(values) if values else None
+
+    @property
+    def max_receiver_throughput_mbps(self) -> float | None:
+        values = [r.receiver_throughput_mbps for r in self.command_results if r.receiver_throughput_mbps is not None]
+        return max(values) if values else None
 
 
 class SafeFormatDict(dict[str, str]):
@@ -461,7 +467,8 @@ def validate_template_fields(templates: list[str], available_keys: set[str]) -> 
         raise ValueError(f"Missing columns/placeholders: {missing}. Available placeholders: {available}")
 
 
-def extract_throughput(output: str) -> tuple[float | None, str | None, int | None]:
+def extract_throughput(output: str) -> tuple[float | None, str | None, int | None, float | None, float | None]:
+    """Return (throughput_mbps, label, retransmissions, sender_mbps, receiver_mbps)."""
     multipliers = {
         "bits/sec": 1 / 1_000_000,
         "kbits/sec": 1 / 1_000,
@@ -473,21 +480,25 @@ def extract_throughput(output: str) -> tuple[float | None, str | None, int | Non
 
     summary_matches = list(_IPERF3_SUMMARY_RE.finditer(output))
     if summary_matches:
-        receiver = next((m for m in summary_matches if m.group(4).lower() == "receiver"), None)
-        sender = next((m for m in summary_matches if m.group(4).lower() == "sender"), None)
-        chosen = receiver or sender or summary_matches[-1]
-        value = float(chosen.group(1))
-        unit = chosen.group(2).lower()
-        role = chosen.group(4).lower()
-        throughput_mbps = value * multipliers[unit]
-        label = f"{value:g} {chosen.group(2)} ({role})"
-        retransmissions = int(sender.group(3)) if sender and sender.group(3) else None
-        return throughput_mbps, label, retransmissions
+        receiver_m = next((m for m in summary_matches if m.group(4).lower() == "receiver"), None)
+        sender_m = next((m for m in summary_matches if m.group(4).lower() == "sender"), None)
+        sender_mbps = float(sender_m.group(1)) * multipliers[sender_m.group(2).lower()] if sender_m else None
+        receiver_mbps = float(receiver_m.group(1)) * multipliers[receiver_m.group(2).lower()] if receiver_m else None
+        chosen = receiver_m or sender_m or summary_matches[-1]
+        throughput_mbps = receiver_mbps or sender_mbps
+        label_parts = []
+        if sender_mbps is not None:
+            label_parts.append(f"{float(sender_m.group(1)):g} {sender_m.group(2)} (sender)")
+        if receiver_mbps is not None:
+            label_parts.append(f"{float(receiver_m.group(1)):g} {receiver_m.group(2)} (receiver)")
+        label = " / ".join(label_parts) if label_parts else f"{float(chosen.group(1)):g} {chosen.group(2)}"
+        retransmissions = int(sender_m.group(3)) if sender_m and sender_m.group(3) else None
+        return throughput_mbps, label, retransmissions, sender_mbps, receiver_mbps
 
     # Fall back to last generic bits/sec match (non-iperf3 output)
     matches = list(THROUGHPUT_PATTERN.finditer(output))
     if not matches:
-        return None, None, None
+        return None, None, None, None, None
     chosen = matches[-1]
     value = float(chosen.group(1))
     unit = chosen.group(2).lower()
@@ -497,7 +508,7 @@ def extract_throughput(output: str) -> tuple[float | None, str | None, int | Non
     label = f"{value:g} {chosen.group(2)}"
     if role_match:
         label = f"{label} ({role_match.group(1).lower()})"
-    return throughput_mbps, label, None
+    return throughput_mbps, label, None, None, None
 
 
 def clean_firewall_name(value: str) -> str | None:
@@ -573,7 +584,7 @@ def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResu
     )
     ended_at = datetime.now()
     combined_output = "\n".join(part for part in [completed.stdout, completed.stderr] if part)
-    throughput_mbps, throughput_label, retransmissions = extract_throughput(combined_output)
+    throughput_mbps, throughput_label, retransmissions, sender_mbps, receiver_mbps = extract_throughput(combined_output)
     return CommandResult(
         template=command,
         command=command,
@@ -585,6 +596,8 @@ def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResu
         throughput_mbps=throughput_mbps,
         throughput_label=throughput_label,
         retransmissions=retransmissions,
+        sender_throughput_mbps=sender_mbps,
+        receiver_throughput_mbps=receiver_mbps,
     )
 
 
@@ -722,7 +735,7 @@ def finalize_background_command(
         )
 
     combined_output = "\n".join(part for part in [stdout, stderr] if part)
-    throughput_mbps, throughput_label, retransmissions = extract_throughput(combined_output)
+    throughput_mbps, throughput_label, retransmissions, sender_mbps, receiver_mbps = extract_throughput(combined_output)
     return CommandResult(
         template=initial_result.template,
         command=initial_result.command,
@@ -734,6 +747,8 @@ def finalize_background_command(
         throughput_mbps=throughput_mbps,
         throughput_label=throughput_label,
         retransmissions=retransmissions,
+        sender_throughput_mbps=sender_mbps,
+        receiver_throughput_mbps=receiver_mbps,
     )
 
 
@@ -853,13 +868,15 @@ def _paramiko_exec(
             return_code=None, stdout="", stderr="", error=str(exc),
         )
     ended_at = datetime.now()
-    throughput_mbps, throughput_label, retransmissions = extract_throughput(stdout)
+    throughput_mbps, throughput_label, retransmissions, sender_mbps, receiver_mbps = extract_throughput(stdout)
     return CommandResult(
         template=template, command=cmd_label,
         started_at=started_at, ended_at=ended_at,
         return_code=rc, stdout=stdout, stderr="",
         throughput_mbps=throughput_mbps, throughput_label=throughput_label,
         retransmissions=retransmissions,
+        sender_throughput_mbps=sender_mbps,
+        receiver_throughput_mbps=receiver_mbps,
     )
 
 
@@ -1081,7 +1098,7 @@ def _paramiko_spoke_session(
                 raw = _shell_read_until_prompt(shell, timeout=cmd_timeout)
                 stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
                 ended_at = datetime.now()
-                throughput_mbps, throughput_label, retransmissions = extract_throughput(stdout)
+                throughput_mbps, throughput_label, retransmissions, sender_mbps, receiver_mbps = extract_throughput(stdout)
                 results.append(CommandResult(
                     template=template, command=cmd_label,
                     started_at=started_at, ended_at=ended_at,
@@ -1089,6 +1106,8 @@ def _paramiko_spoke_session(
                     throughput_mbps=throughput_mbps,
                     throughput_label=throughput_label,
                     retransmissions=retransmissions,
+                    sender_throughput_mbps=sender_mbps,
+                    receiver_throughput_mbps=receiver_mbps,
                 ))
             except Exception as exc:
                 ended_at = datetime.now()
@@ -1286,17 +1305,15 @@ def summarize(results: list[SiteRun]) -> dict[str, Any]:
     total_commands = sum(len(site_run.command_results) for site_run in results)
     failed_sites = sum(1 for site_run in results if site_run.status != "success")
     successful_sites = len(results) - failed_sites
-    throughput_values = [
-        site_run.max_throughput_mbps
-        for site_run in results
-        if site_run.max_throughput_mbps is not None
-    ]
+    sender_values = [s.max_sender_throughput_mbps for s in results if s.max_sender_throughput_mbps is not None]
+    receiver_values = [s.max_receiver_throughput_mbps for s in results if s.max_receiver_throughput_mbps is not None]
     return {
         "total_sites": len(results),
         "total_commands": total_commands,
         "successful_sites": successful_sites,
         "failed_sites": failed_sites,
-        "peak_throughput_mbps": max(throughput_values) if throughput_values else None,
+        "peak_sender_mbps": max(sender_values) if sender_values else None,
+        "peak_receiver_mbps": max(receiver_values) if receiver_values else None,
     }
 
 
@@ -1365,7 +1382,6 @@ def build_html_report(
     results: list[SiteRun],
     command_templates: list[str],
     delay_seconds: int,
-    hub_results: dict[str, dict] | None = None,
 ) -> str:
     summary = summarize(results)
     created_at = datetime.now()
@@ -1384,7 +1400,8 @@ def build_html_report(
               <td>{speed}</td>
               <td>{test_speed}</td>
               <td><span class="badge {status_class}">{status}</span></td>
-              <td>{peak}</td>
+              <td>{sender}</td>
+              <td>{receiver}</td>
               <td>{started}</td>
               <td>{duration}</td>
             </tr>
@@ -1397,7 +1414,8 @@ def build_html_report(
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
                 status=html.escape(site_run.status),
                 status_class=html.escape(site_run.status),
-                peak=html.escape(format_peak(site_run.max_throughput_mbps)),
+                sender=html.escape(format_peak(site_run.max_sender_throughput_mbps)),
+                receiver=html.escape(format_peak(site_run.max_receiver_throughput_mbps)),
                 started=html.escape(format_timestamp(site_run.started_at)),
                 duration=html.escape(format_seconds(site_run.duration_seconds)),
             )
@@ -1407,9 +1425,13 @@ def build_html_report(
         for result in site_run.command_results:
             command_blocks.append(_render_command_block(result))
 
-        peak_line = (
-            f'<p><strong>Peak Throughput:</strong> {html.escape(format_peak(site_run.max_throughput_mbps))}</p>'
-            if site_run.max_throughput_mbps is not None else ""
+        sender_line = (
+            f'<p><strong>Sender Throughput:</strong> {html.escape(format_peak(site_run.max_sender_throughput_mbps))}</p>'
+            if site_run.max_sender_throughput_mbps is not None else ""
+        )
+        receiver_line = (
+            f'<p><strong>Receiver Throughput:</strong> {html.escape(format_peak(site_run.max_receiver_throughput_mbps))}</p>'
+            if site_run.max_receiver_throughput_mbps is not None else ""
         )
         retr_total = sum(
             r.retransmissions for r in site_run.command_results if r.retransmissions is not None
@@ -1432,7 +1454,8 @@ def build_html_report(
               <p><strong>Configured Speed:</strong> {speed}</p>
               <p><strong>Test Bandwidth (+15%):</strong> {test_speed}</p>
               <p><strong>Status:</strong> <span class="badge {status_class}">{status}</span></p>
-              {peak_line}
+              {sender_line}
+              {receiver_line}
               {retr_line}
               <p><strong>Started:</strong> {started} &nbsp;|&nbsp; <strong>Ended:</strong> {ended} &nbsp;|&nbsp; <strong>Duration:</strong> {duration}</p>
               {delay_line}
@@ -1446,40 +1469,14 @@ def build_html_report(
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
                 status=html.escape(site_run.status),
                 status_class=html.escape(site_run.status),
-                peak_line=peak_line,
+                sender_line=sender_line,
+                receiver_line=receiver_line,
                 retr_line=retr_line,
                 started=html.escape(format_timestamp(site_run.started_at)),
                 ended=html.escape(format_timestamp(site_run.ended_at)),
                 duration=html.escape(format_seconds(site_run.duration_seconds)),
                 delay_line=delay_line,
                 commands="\n".join(command_blocks),
-            )
-        )
-
-    hub_cards_html: list[str] = []
-    for hub_ip, ctx in (hub_results or {}).items():
-        hub_blocks: list[str] = []
-        for r in ctx.get("setup_results", []):
-            hub_blocks.append(_render_command_block(r, "Hub Setup"))
-        server_result: CommandResult | None = ctx.get("server_result")
-        if server_result is not None:
-            hub_blocks.append(_render_command_block(server_result, "Hub Server"))
-        ssh_target = ctx.get("ssh_target") or hub_ip
-        mgmt_line = (
-            f'<p><strong>Management IP (SSH):</strong> {html.escape(ssh_target)}</p>'
-            if ssh_target != hub_ip else ""
-        )
-        hub_cards_html.append(
-            """
-            <section class="site-card">
-              <h2>Hub: {hub_ip}</h2>
-              {mgmt_line}
-              {commands}
-            </section>
-            """.format(
-                hub_ip=html.escape(hub_ip),
-                mgmt_line=mgmt_line,
-                commands="\n".join(hub_blocks),
             )
         )
 
@@ -1616,7 +1613,8 @@ def build_html_report(
         <div class="metric"><div class="metric-label">Successful Sites</div><div class="metric-value">{summary["successful_sites"]}</div></div>
         <div class="metric"><div class="metric-label">Failed Sites</div><div class="metric-value">{summary["failed_sites"]}</div></div>
         <div class="metric"><div class="metric-label">Total Commands</div><div class="metric-value">{summary["total_commands"]}</div></div>
-        <div class="metric"><div class="metric-label">Peak Detected Throughput</div><div class="metric-value">{html.escape(format_peak(summary["peak_throughput_mbps"]))}</div></div>
+        <div class="metric"><div class="metric-label">Peak Sender</div><div class="metric-value">{html.escape(format_peak(summary["peak_sender_mbps"]))}</div></div>
+        <div class="metric"><div class="metric-label">Peak Receiver</div><div class="metric-value">{html.escape(format_peak(summary["peak_receiver_mbps"]))}</div></div>
       </div>
 
       <table>
@@ -1629,7 +1627,8 @@ def build_html_report(
             <th>Speed</th>
             <th>Test Bandwidth</th>
             <th>Status</th>
-            <th>Peak Throughput</th>
+            <th>Sender</th>
+            <th>Receiver</th>
             <th>Started</th>
             <th>Duration</th>
           </tr>
@@ -1640,7 +1639,6 @@ def build_html_report(
       </table>
     </section>
 
-    {"".join(hub_cards_html)}
     {"".join(details_html)}
   </main>
 </body>
@@ -2257,7 +2255,6 @@ def main() -> int:
         results=runs,
         command_templates=active_command_templates,
         delay_seconds=args.delay_seconds,
-        hub_results=hub_contexts,
     )
     output_path.write_text(report_html, encoding="utf-8")
 

@@ -2331,7 +2331,36 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                     )
                     ctx["server_process"] = None
 
-            print(f"Waiting {args.hub_server_start_delay:.0f}s for all hub servers to be ready...", flush=True)
+            failed_hubs = [ip for ip, ctx in hub_contexts.items() if ctx.get("failed")]
+            if failed_hubs:
+                for ip in failed_hubs:
+                    err = ""
+                    ctx_results = hub_contexts[ip].get("setup_results", [])
+                    if ctx_results and ctx_results[0].error:
+                        err = f": {ctx_results[0].error}"
+                    print(f"  Hub {ip} — connection failed{err}", flush=True)
+                if len(failed_hubs) == len(hub_contexts):
+                    print("All hubs failed to connect — aborting.", flush=True)
+                    now = datetime.now()
+                    runs = []
+                    for site in sites:
+                        runs.append(SiteRun(site=site, started_at=now, ended_at=now))
+                    report_html = build_html_report(
+                        input_path=input_path, output_path=output_path,
+                        results=runs, command_templates=active_command_templates,
+                        delay_seconds=args.delay_seconds,
+                    )
+                    output_path.write_text(report_html, encoding="utf-8")
+                    print(f"Report written to: {output_path}")
+                    return 1
+                print(
+                    f"{len(failed_hubs)} of {len(hub_contexts)} hub(s) failed — "
+                    f"their spokes will be skipped. Waiting {args.hub_server_start_delay:.0f}s "
+                    f"for remaining hub(s)...",
+                    flush=True,
+                )
+            else:
+                print(f"Waiting {args.hub_server_start_delay:.0f}s for all hub servers to be ready...", flush=True)
             time.sleep(args.hub_server_start_delay)
         else:
             print("Hub setup skipped — assuming hub traffictest server is already running.", flush=True)

@@ -1678,7 +1678,7 @@ def build_excel_report(results: list[SiteRun], summary: dict[str, Any], output_p
         import openpyxl
         from openpyxl.styles import Alignment, Font, PatternFill
     except ImportError:
-        print("openpyxl not installed — skipping Excel report. Install with: pip install openpyxl")
+        print(f"openpyxl not installed — skipping Excel report. Run: {sys.executable} -m pip install openpyxl")
         return
 
     wb = openpyxl.Workbook()
@@ -1744,7 +1744,7 @@ def build_pdf_report(results: list[SiteRun], summary: dict[str, Any], output_pat
         from reportlab.lib.units import cm
         from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     except ImportError:
-        print("reportlab not installed — skipping PDF report. Install with: pip install reportlab")
+        print(f"reportlab not installed — skipping PDF report. Run: {sys.executable} -m pip install reportlab")
         return
 
     doc = SimpleDocTemplate(

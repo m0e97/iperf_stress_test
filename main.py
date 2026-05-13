@@ -1372,6 +1372,18 @@ def _render_command_block(result: CommandResult, heading: str = "Template") -> s
     )
 
 
+def _compute_result(site_run: SiteRun) -> tuple[str, str]:
+    """Return (result_label, css_class) for a site run based on the 95% bandwidth threshold."""
+    sender_mbps = site_run.max_sender_throughput_mbps
+    speed_mbps = site_run.site.speed_mbps
+    if sender_mbps is not None and speed_mbps is not None and sender_mbps >= 0.95 * speed_mbps:
+        return "Pass", "success"
+    elif sender_mbps is None:
+        return "Fail (not reachable)", "failed"
+    else:
+        return "Fail (insufficient speed)", "failed"
+
+
 def build_html_report(
     input_path: Path,
     output_path: Path,
@@ -1386,14 +1398,8 @@ def build_html_report(
     details_html: list[str] = []
 
     for site_run in results:
+        result_label, result_class = _compute_result(site_run)
         sender_mbps = site_run.max_sender_throughput_mbps
-        speed_mbps = site_run.site.speed_mbps
-        if sender_mbps is not None and speed_mbps is not None and sender_mbps >= 0.95 * speed_mbps:
-            result_label, result_class = "Pass", "success"
-        elif sender_mbps is None:
-            result_label, result_class = "Fail (not reachable)", "failed"
-        else:
-            result_label, result_class = "Fail (insufficient speed)", "failed"
 
         rows_html.append(
             """
@@ -1658,6 +1664,139 @@ def build_html_report(
 </body>
 </html>
 """
+
+
+def build_excel_report(results: list[SiteRun], summary: dict[str, Any], output_path: Path) -> None:
+    try:
+        import openpyxl
+        from openpyxl.styles import Alignment, Font, PatternFill
+    except ImportError:
+        print("openpyxl not installed — skipping Excel report. Install with: pip install openpyxl")
+        return
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Results"
+
+    headers = ["#", "Site Name", "Speed", "IP", "Hub IP", "Actual Bandwidth", "Generated Traffic", "Started", "Result"]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.fill = PatternFill("solid", fgColor="2D2D2D")
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center")
+
+    pass_fill = PatternFill("solid", fgColor="116530")
+    fail_fill = PatternFill("solid", fgColor="9B1C1C")
+    alt_fill = PatternFill("solid", fgColor="F5F5F5")
+    white_bold = Font(color="FFFFFF", bold=True)
+
+    for i, site_run in enumerate(results, start=2):
+        result_label, result_class = _compute_result(site_run)
+        ws.append([
+            site_run.site.index,
+            site_run.site.display_name,
+            site_run.site.speed or "N/A",
+            site_run.site.ip_address or "N/A",
+            site_run.site.hub_ip or "N/A",
+            format_peak(site_run.max_sender_throughput_mbps),
+            site_run.site.speed_with_margin_label or "N/A",
+            format_timestamp(site_run.started_at),
+            result_label,
+        ])
+        if i % 2 == 1:
+            for col in range(1, 9):
+                ws.cell(row=i, column=col).fill = alt_fill
+        result_cell = ws.cell(row=i, column=9)
+        result_cell.fill = pass_fill if result_class == "success" else fail_fill
+        result_cell.font = white_bold
+        result_cell.alignment = Alignment(horizontal="center")
+
+    for col in ws.columns:
+        width = max((len(str(cell.value or "")) for cell in col), default=0)
+        ws.column_dimensions[col[0].column_letter].width = max(width + 2, 12)
+
+    ws2 = wb.create_sheet("Summary")
+    ws2.append(["Metric", "Value"])
+    for cell in ws2[1]:
+        cell.font = Font(bold=True)
+    ws2.append(["Total Sites", summary["total_sites"]])
+    ws2.append(["Successful Sites", summary["successful_sites"]])
+    ws2.append(["Failed Sites", summary["failed_sites"]])
+    ws2.column_dimensions["A"].width = 20
+    ws2.column_dimensions["B"].width = 10
+
+    wb.save(output_path)
+    print(f"Excel report written to: {output_path}")
+
+
+def build_pdf_report(results: list[SiteRun], summary: dict[str, Any], output_path: Path) -> None:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except ImportError:
+        print("reportlab not installed — skipping PDF report. Install with: pip install reportlab")
+        return
+
+    doc = SimpleDocTemplate(
+        str(output_path), pagesize=landscape(A4),
+        leftMargin=1 * cm, rightMargin=1 * cm, topMargin=1.5 * cm, bottomMargin=1.5 * cm,
+    )
+    styles = getSampleStyleSheet()
+    elements = []
+
+    elements.append(Paragraph("FortiGate Traffic Test Report", styles["Title"]))
+    elements.append(Spacer(1, 8))
+    elements.append(Paragraph(
+        f"Total: {summary['total_sites']}  |  Pass: {summary['successful_sites']}  |  Fail: {summary['failed_sites']}",
+        styles["Normal"],
+    ))
+    elements.append(Spacer(1, 12))
+
+    col_headers = ["#", "Site Name", "Speed", "IP", "Hub IP", "Actual BW", "Generated Traffic", "Started", "Result"]
+    data: list[list[str]] = [col_headers]
+    result_classes: list[str] = []
+
+    for site_run in results:
+        result_label, result_class = _compute_result(site_run)
+        result_classes.append(result_class)
+        data.append([
+            str(site_run.site.index),
+            site_run.site.display_name,
+            site_run.site.speed or "N/A",
+            site_run.site.ip_address or "N/A",
+            site_run.site.hub_ip or "N/A",
+            format_peak(site_run.max_sender_throughput_mbps),
+            site_run.site.speed_with_margin_label or "N/A",
+            format_timestamp(site_run.started_at),
+            result_label,
+        ])
+
+    style_cmds = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2D2D2D")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
+    ]
+    for i, result_class in enumerate(result_classes, start=1):
+        bg = colors.HexColor("#116530") if result_class == "success" else colors.HexColor("#9B1C1C")
+        style_cmds += [
+            ("BACKGROUND", (8, i), (8, i), bg),
+            ("TEXTCOLOR", (8, i), (8, i), colors.white),
+            ("FONTNAME", (8, i), (8, i), "Helvetica-Bold"),
+        ]
+
+    table = Table(data, repeatRows=1, hAlign="LEFT")
+    table.setStyle(TableStyle(style_cmds))
+    elements.append(table)
+    doc.build(elements)
+    print(f"PDF report written to: {output_path}")
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -2537,6 +2676,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                 print(f"Waiting {args.delay_seconds} seconds before the next site...", flush=True)
                 time.sleep(args.delay_seconds)
 
+    summary = summarize(runs)
     report_html = build_html_report(
         input_path=input_path,
         output_path=output_path,
@@ -2545,9 +2685,10 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         delay_seconds=args.delay_seconds,
     )
     output_path.write_text(report_html, encoding="utf-8")
+    print(f"HTML report written to: {output_path}")
 
-    summary = summarize(runs)
-    print(f"Report written to: {output_path}")
+    build_excel_report(runs, summary, output_path.with_suffix(".xlsx"))
+    build_pdf_report(runs, summary, output_path.with_suffix(".pdf"))
     print(
         f"Sites: {summary['total_sites']}, success: {summary['successful_sites']}, "
         f"failed: {summary['failed_sites']}"

@@ -1397,7 +1397,7 @@ def build_html_report(
 
         rows_html.append(
             """
-            <tr>
+            <tr data-result="{row_result}">
               <td>{index}</td>
               <td>{name}</td>
               <td>{speed}</td>
@@ -1419,6 +1419,7 @@ def build_html_report(
                 started=html.escape(format_timestamp(site_run.started_at)),
                 result_label=result_label,
                 result_class=result_class,
+                row_result="pass" if result_class == "success" else "fail",
             )
         )
 
@@ -1594,6 +1595,10 @@ def build_html_report(
     .skipped {{ color: #fff; background: var(--skipped); }}
     .muted {{ color: var(--muted); }}
     ul {{ margin: 0; padding-left: 20px; }}
+    .summary-grid .metric {{ cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; }}
+    .summary-grid .metric:hover {{ box-shadow: 0 0 0 2px var(--accent); }}
+    .summary-grid .metric.active {{ box-shadow: 0 0 0 3px var(--accent); background: var(--accent); color: #fff; }}
+    .summary-grid .metric.active .metric-label, .summary-grid .metric.active .metric-value {{ color: #fff; }}
   </style>
 </head>
 <body>
@@ -1611,11 +1616,9 @@ def build_html_report(
     <section class="summary">
       <h2>Summary</h2>
       <div class="summary-grid">
-        <div class="metric"><div class="metric-label">Total Sites</div><div class="metric-value">{summary["total_sites"]}</div></div>
-        <div class="metric"><div class="metric-label">Successful Sites</div><div class="metric-value">{summary["successful_sites"]}</div></div>
-        <div class="metric"><div class="metric-label">Failed Sites</div><div class="metric-value">{summary["failed_sites"]}</div></div>
-        <div class="metric"><div class="metric-label">Peak Sender</div><div class="metric-value">{html.escape(format_peak(summary["peak_sender_mbps"]))}</div></div>
-        <div class="metric"><div class="metric-label">Peak Receiver</div><div class="metric-value">{html.escape(format_peak(summary["peak_receiver_mbps"]))}</div></div>
+        <div class="metric" onclick="filterTable(null, this)"><div class="metric-label">Total Sites</div><div class="metric-value">{summary["total_sites"]}</div></div>
+        <div class="metric" onclick="filterTable('pass', this)"><div class="metric-label">Successful Sites</div><div class="metric-value">{summary["successful_sites"]}</div></div>
+        <div class="metric" onclick="filterTable('fail', this)"><div class="metric-label">Failed Sites</div><div class="metric-value">{summary["failed_sites"]}</div></div>
       </div>
 
       <table>
@@ -1640,6 +1643,18 @@ def build_html_report(
 
     {"".join(details_html)}
   </main>
+  <script>
+    function filterTable(result, card) {{
+      var cards = document.querySelectorAll('.summary-grid .metric');
+      cards.forEach(function(c) {{ c.classList.remove('active'); }});
+      card.classList.add('active');
+      var rows = document.querySelectorAll('tbody tr');
+      rows.forEach(function(r) {{
+        r.style.display = (result === null || r.dataset.result === result) ? '' : 'none';
+      }});
+    }}
+    document.querySelector('.summary-grid .metric').classList.add('active');
+  </script>
 </body>
 </html>
 """
@@ -1795,8 +1810,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output",
-        default="traffic_test_report.html",
-        help="HTML report output path. Default: traffic_test_report.html",
+        default=None,
+        help="HTML report output path. Default: traffic_test_report_YYYYMMDD_HHMMSS.html",
     )
     parser.add_argument(
         "--skip-hub-setup",
@@ -2126,7 +2141,8 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
 
 def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     input_path = Path(args.input).expanduser().resolve()
-    output_path = Path(args.output).expanduser().resolve()
+    output_name = args.output or f"traffic_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    output_path = Path(output_name).expanduser().resolve()
 
     if not input_path.exists():
         parser.error(f"Input file not found: {input_path}")

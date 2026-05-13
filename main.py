@@ -140,6 +140,7 @@ class SiteDefinition:
     hub_server_intf: str = ""
     spoke_client_intf: str = ""
     traffictest_port: str = ""
+    hub_name: str = ""
 
 
 @dataclass
@@ -1372,6 +1373,12 @@ def _render_command_block(result: CommandResult, heading: str = "Template") -> s
     )
 
 
+def _hub_display(site: SiteDefinition) -> str:
+    if site.hub_name:
+        return f"{site.hub_name} ({site.hub_ip})"
+    return site.hub_ip or "N/A"
+
+
 def _compute_result(site_run: SiteRun) -> tuple[str, str]:
     """Return (result_label, css_class) for a site run based on the 95% bandwidth threshold."""
     sender_mbps = site_run.max_sender_throughput_mbps
@@ -1418,7 +1425,7 @@ def build_html_report(
                 index=site_run.site.index,
                 name=html.escape(site_run.site.display_name),
                 ip=html.escape(site_run.site.ip_address or "N/A"),
-                hub_ip=html.escape(site_run.site.hub_ip or "N/A"),
+                hub_ip=html.escape(_hub_display(site_run.site)),
                 speed=html.escape(site_run.site.speed or "N/A"),
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
                 sender=html.escape(format_peak(sender_mbps)),
@@ -1473,7 +1480,7 @@ def build_html_report(
             """.format(
                 name=html.escape(site_run.site.display_name),
                 ip=html.escape(site_run.site.ip_address or "N/A"),
-                hub_ip=html.escape(site_run.site.hub_ip or "N/A"),
+                hub_ip=html.escape(_hub_display(site_run.site)),
                 speed=html.escape(site_run.site.speed or "N/A"),
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
                 status=html.escape(site_run.status),
@@ -1634,7 +1641,7 @@ def build_html_report(
             <th>Site name</th>
             <th>Speed</th>
             <th>IP</th>
-            <th>Hub IP</th>
+            <th>Hub</th>
             <th>Actual bandwidth</th>
             <th>Generated traffic</th>
             <th>Started</th>
@@ -1697,7 +1704,7 @@ def build_excel_report(results: list[SiteRun], summary: dict[str, Any], output_p
             site_run.site.display_name,
             site_run.site.speed or "N/A",
             site_run.site.ip_address or "N/A",
-            site_run.site.hub_ip or "N/A",
+            _hub_display(site_run.site),
             format_peak(site_run.max_sender_throughput_mbps),
             site_run.site.speed_with_margin_label or "N/A",
             format_timestamp(site_run.started_at),
@@ -1767,7 +1774,7 @@ def build_pdf_report(results: list[SiteRun], summary: dict[str, Any], output_pat
             site_run.site.display_name,
             site_run.site.speed or "N/A",
             site_run.site.ip_address or "N/A",
-            site_run.site.hub_ip or "N/A",
+            _hub_display(site_run.site),
             format_peak(site_run.max_sender_throughput_mbps),
             site_run.site.speed_with_margin_label or "N/A",
             format_timestamp(site_run.started_at),
@@ -2473,6 +2480,24 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                             error=server_initial.error,
                         )
 
+            hub_discovered_name = ""
+            if not connection_failed and not args.dry_run:
+                hub_site = SiteDefinition(
+                    index=0, raw={},
+                    placeholders={"spoke_ip": ssh_target},
+                    display_name=ssh_target,
+                    ip_address=ssh_target,
+                    hub_ip=hub_ip,
+                    speed="", speed_mbps=None,
+                    speed_with_margin_mbps=None,
+                    speed_with_margin_label="",
+                )
+                _, hub_discovered_name = discover_firewall_name(
+                    hub_site, args.firewall_name_command,
+                    timeout=args.firewall_name_timeout, dry_run=args.dry_run,
+                )
+                hub_discovered_name = hub_discovered_name or ""
+
             with hub_contexts_lock:
                 hub_contexts[hub_ip] = {
                     "ssh_target": ssh_target,
@@ -2480,6 +2505,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                     "server_initial": server_initial,
                     "server_process": server_process,
                     "failed": connection_failed,
+                    "hub_name": hub_discovered_name,
                 }
 
         if not args.skip_hub_setup:
@@ -2492,6 +2518,10 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                 t.start()
             for t in setup_threads:
                 t.join()
+
+            # Propagate discovered hub names to each spoke site.
+            for site in sites:
+                site.hub_name = hub_contexts.get(site.hub_ip, {}).get("hub_name", "")
 
             # Detect any hub server that exited before the delay (error condition).
             for _, ctx in hub_contexts.items():
@@ -2651,7 +2681,30 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                     ctx["server_result"] = ctx.get("server_initial")
 
     else:
-        # Custom command mode: run sites sequentially.
+        # Custom command mode: discover hub names once per unique hub IP.
+        seen_hub_ips: dict[str, str] = {}
+        for site in sites:
+            if site.hub_ip and site.hub_ip not in seen_hub_ips:
+                ssh_target = site.hub_mgmt_ip or site.hub_ip
+                hub_site = SiteDefinition(
+                    index=0, raw={},
+                    placeholders={"spoke_ip": ssh_target},
+                    display_name=ssh_target,
+                    ip_address=ssh_target,
+                    hub_ip=site.hub_ip,
+                    speed="", speed_mbps=None,
+                    speed_with_margin_mbps=None,
+                    speed_with_margin_label="",
+                )
+                _, hub_name = discover_firewall_name(
+                    hub_site, args.firewall_name_command,
+                    timeout=args.firewall_name_timeout, dry_run=args.dry_run,
+                )
+                seen_hub_ips[site.hub_ip] = hub_name or ""
+        for site in sites:
+            site.hub_name = seen_hub_ips.get(site.hub_ip, "")
+
+        # Run sites sequentially.
         for index, site in enumerate(sites, start=1):
             print(f"[{index}/{total_sites}] Discovering firewall name ({site.ip_address or 'no-ip'})", flush=True)
             name_result, discovered_name = discover_firewall_name(

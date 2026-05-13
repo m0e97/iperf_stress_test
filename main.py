@@ -1300,8 +1300,8 @@ def run_fortigate_spoke_only(
 
 
 def summarize(results: list[SiteRun]) -> dict[str, Any]:
-    failed_sites = sum(1 for site_run in results if site_run.status != "success")
-    successful_sites = len(results) - failed_sites
+    successful_sites = sum(1 for site_run in results if _compute_result(site_run)[1] == "success")
+    failed_sites = len(results) - successful_sites
     sender_values = [s.max_sender_throughput_mbps for s in results if s.max_sender_throughput_mbps is not None]
     receiver_values = [s.max_receiver_throughput_mbps for s in results if s.max_receiver_throughput_mbps is not None]
     return {

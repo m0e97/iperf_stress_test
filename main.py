@@ -1336,7 +1336,7 @@ def _render_command_block(result: CommandResult, heading: str = "Template") -> s
         <div class="command-block">
           <div><strong>{heading}:</strong> <code>{template}</code></div>
           <div><strong>Command:</strong> <code>{command}</code></div>
-          <div><strong>Status:</strong> <span class="{status_class}">{status}</span></div>
+          <div><strong>Status:</strong> <span class="badge {status_class}">{status}</span></div>
           <div><strong>Return Code:</strong> {return_code}</div>
           <div><strong>Started:</strong> {started}</div>
           <div><strong>Duration:</strong> {duration}</div>
@@ -1383,7 +1383,7 @@ def build_html_report(
               <td>{hub_ip}</td>
               <td>{speed}</td>
               <td>{test_speed}</td>
-              <td class="{status_class}">{status}</td>
+              <td><span class="badge {status_class}">{status}</span></td>
               <td>{peak}</td>
               <td>{started}</td>
               <td>{duration}</td>
@@ -1407,6 +1407,22 @@ def build_html_report(
         for result in site_run.command_results:
             command_blocks.append(_render_command_block(result))
 
+        peak_line = (
+            f'<p><strong>Peak Throughput:</strong> {html.escape(format_peak(site_run.max_throughput_mbps))}</p>'
+            if site_run.max_throughput_mbps is not None else ""
+        )
+        retr_total = sum(
+            r.retransmissions for r in site_run.command_results if r.retransmissions is not None
+        )
+        retr_line = (
+            f'<p><strong>Total Retransmissions:</strong> {retr_total}</p>'
+            if any(r.retransmissions is not None for r in site_run.command_results) else ""
+        )
+        delay_line = (
+            f'<p><strong>Delay After This Site:</strong> {site_run.delayed_after_seconds}s</p>'
+            if site_run.delayed_after_seconds else ""
+        )
+
         details_html.append(
             """
             <section class="site-card">
@@ -1414,11 +1430,12 @@ def build_html_report(
               <p><strong>IP:</strong> {ip}</p>
               <p><strong>Hub IP:</strong> {hub_ip}</p>
               <p><strong>Configured Speed:</strong> {speed}</p>
-              <p><strong>Traffic Test Bandwidth (+15%):</strong> {test_speed}</p>
-              <p><strong>Site Status:</strong> <span class="{status_class}">{status}</span></p>
-              <p><strong>Started:</strong> {started}</p>
-              <p><strong>Ended:</strong> {ended}</p>
-              <p><strong>Inter-site Delay Applied After This Site:</strong> {delay}s</p>
+              <p><strong>Test Bandwidth (+15%):</strong> {test_speed}</p>
+              <p><strong>Status:</strong> <span class="badge {status_class}">{status}</span></p>
+              {peak_line}
+              {retr_line}
+              <p><strong>Started:</strong> {started} &nbsp;|&nbsp; <strong>Ended:</strong> {ended} &nbsp;|&nbsp; <strong>Duration:</strong> {duration}</p>
+              {delay_line}
               {commands}
             </section>
             """.format(
@@ -1429,9 +1446,12 @@ def build_html_report(
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
                 status=html.escape(site_run.status),
                 status_class=html.escape(site_run.status),
+                peak_line=peak_line,
+                retr_line=retr_line,
                 started=html.escape(format_timestamp(site_run.started_at)),
                 ended=html.escape(format_timestamp(site_run.ended_at)),
-                delay=site_run.delayed_after_seconds,
+                duration=html.escape(format_seconds(site_run.duration_seconds)),
+                delay_line=delay_line,
                 commands="\n".join(command_blocks),
             )
         )
@@ -1481,6 +1501,7 @@ def build_html_report(
       --success: #116530;
       --failed: #9b1c1c;
       --template-error: #b26b00;
+      --skipped: #52606d;
       --accent: #8c3d2b;
     }}
     * {{ box-sizing: border-box; }}
@@ -1501,7 +1522,7 @@ def build_html_report(
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 16px;
-      padding: 20px;
+      padding: 24px;
       box-shadow: 0 10px 24px rgba(31, 41, 51, 0.06);
       margin-bottom: 20px;
     }}
@@ -1531,12 +1552,17 @@ def build_html_report(
       margin-top: 16px;
       font-size: 0.95rem;
     }}
+    th {{
+      background: #f4efe7;
+      font-weight: 600;
+    }}
     th, td {{
-      padding: 10px;
+      padding: 10px 12px;
       border-bottom: 1px solid var(--border);
       text-align: left;
-      vertical-align: top;
+      vertical-align: middle;
     }}
+    tr:last-child td {{ border-bottom: none; }}
     code, pre {{
       font-family: "SFMono-Regular", Consolas, monospace;
       font-size: 0.9rem;
@@ -1549,15 +1575,24 @@ def build_html_report(
       border-radius: 12px;
       padding: 12px;
       overflow-x: auto;
+      margin-top: 8px;
     }}
     .command-block {{
       padding-top: 14px;
       margin-top: 14px;
       border-top: 1px solid var(--border);
     }}
-    .success {{ color: var(--success); font-weight: 700; }}
-    .failed {{ color: var(--failed); font-weight: 700; }}
-    .template-error {{ color: var(--template-error); font-weight: 700; }}
+    .badge {{
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      font-weight: 700;
+    }}
+    .success {{ color: #fff; background: var(--success); }}
+    .failed {{ color: #fff; background: var(--failed); }}
+    .template-error {{ color: #fff; background: var(--template-error); }}
+    .skipped {{ color: #fff; background: var(--skipped); }}
     .muted {{ color: var(--muted); }}
     ul {{ margin: 0; padding-left: 20px; }}
   </style>

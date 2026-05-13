@@ -56,7 +56,7 @@ FORTIGATE_HUB_SERVER_COMMAND = "diagnose traffictest run -s"
 FORTIGATE_SPOKE_COMMANDS = [
     "diagnose traffictest client-intf {spoke_client_intf}",
     "diagnose traffictest port {traffictest_port}",
-    "diagnose traffictest run -b {speed_with_margin} -c {hub_ip} -t {traffictest_duration}",
+    "diagnose traffictest run -b {speed_with_margin} -c {hub_ip}",
 ]
 THROUGHPUT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGTP]?bits/sec)", re.IGNORECASE)
 ROLE_PATTERN = re.compile(r"\b(sender|receiver)\b", re.IGNORECASE)
@@ -1396,8 +1396,6 @@ def build_html_report(
         )
 
         command_blocks: list[str] = []
-        if site_run.name_discovery_result is not None:
-            command_blocks.append(_render_command_block(site_run.name_discovery_result, "Firewall Name Discovery"))
         for result in site_run.command_results:
             command_blocks.append(_render_command_block(result))
 

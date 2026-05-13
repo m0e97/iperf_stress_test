@@ -1299,14 +1299,12 @@ def run_fortigate_spoke_only(
 
 
 def summarize(results: list[SiteRun]) -> dict[str, Any]:
-    total_commands = sum(len(site_run.command_results) for site_run in results)
     failed_sites = sum(1 for site_run in results if site_run.status != "success")
     successful_sites = len(results) - failed_sites
     sender_values = [s.max_sender_throughput_mbps for s in results if s.max_sender_throughput_mbps is not None]
     receiver_values = [s.max_receiver_throughput_mbps for s in results if s.max_receiver_throughput_mbps is not None]
     return {
         "total_sites": len(results),
-        "total_commands": total_commands,
         "successful_sites": successful_sites,
         "failed_sites": failed_sites,
         "peak_sender_mbps": max(sender_values) if sender_values else None,
@@ -1420,7 +1418,8 @@ def build_html_report(
 
         command_blocks: list[str] = []
         for result in site_run.command_results:
-            command_blocks.append(_render_command_block(result))
+            if "traffictest run" in result.command:
+                command_blocks.append(_render_command_block(result))
 
         sender_line = (
             f'<p><strong>Sender Throughput:</strong> {html.escape(format_peak(site_run.max_sender_throughput_mbps))}</p>'
@@ -1609,7 +1608,6 @@ def build_html_report(
         <div class="metric"><div class="metric-label">Total Sites</div><div class="metric-value">{summary["total_sites"]}</div></div>
         <div class="metric"><div class="metric-label">Successful Sites</div><div class="metric-value">{summary["successful_sites"]}</div></div>
         <div class="metric"><div class="metric-label">Failed Sites</div><div class="metric-value">{summary["failed_sites"]}</div></div>
-        <div class="metric"><div class="metric-label">Total Commands</div><div class="metric-value">{summary["total_commands"]}</div></div>
         <div class="metric"><div class="metric-label">Peak Sender</div><div class="metric-value">{html.escape(format_peak(summary["peak_sender_mbps"]))}</div></div>
         <div class="metric"><div class="metric-label">Peak Receiver</div><div class="metric-value">{html.escape(format_peak(summary["peak_receiver_mbps"]))}</div></div>
       </div>

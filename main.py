@@ -2280,8 +2280,12 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
 
 def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     input_path = Path(args.input).expanduser().resolve()
-    output_name = args.output or f"traffic_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-    output_path = Path(output_name).expanduser().resolve()
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+    else:
+        reports_dir = Path("Reports").resolve()
+        reports_dir.mkdir(exist_ok=True)
+        output_path = reports_dir / f"traffic_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
 
     if not input_path.exists():
         parser.error(f"Input file not found: {input_path}")

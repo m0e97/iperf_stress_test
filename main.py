@@ -1673,11 +1673,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--paramiko",
         action="store_true",
-        default=False,
+        default=sys.platform == "win32",
         help=(
             "Use the Paramiko Python library for SSH instead of external binaries. "
-            "Requires: pip install paramiko. Recommended on Windows where sshpass/plink "
-            "are unavailable or blocked by group policy."
+            "Requires: pip install paramiko. Default on Windows."
         ),
     )
     parser.add_argument(

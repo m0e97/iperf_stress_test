@@ -1811,6 +1811,21 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _ask_password_gui(prompt: str) -> str:
+    """Show a GUI password dialog (masked input). Falls back to getpass if tkinter is unavailable."""
+    try:
+        import tkinter as tk
+        from tkinter.simpledialog import askstring
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        password = askstring("SSH Password", prompt, show="*", parent=root)
+        root.destroy()
+        return password or ""
+    except Exception:
+        return getpass.getpass(prompt)
+
+
 def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     print("=" * 60)
     print("FortiGate Traffic Test Runner — Interactive Mode")
@@ -1821,7 +1836,7 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     username = input("SSH username (leave blank to skip): ").strip()
     if username:
         args.sshuser = username
-    password = getpass.getpass("SSH password (leave blank to skip): ")
+    password = _ask_password_gui("SSH password (leave blank to skip):")
     if password:
         args.sshpw = password
 

@@ -1811,34 +1811,94 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _ask_password_gui(prompt: str) -> str:
-    """Show a GUI password dialog (masked input). Falls back to getpass if tkinter is unavailable."""
+def _show_inputs_dialog(default_file: str) -> tuple[str, str, str] | None:
+    """Show a GUI form for file path, username, and password. Returns (file, user, pw) or None on failure."""
     try:
         import tkinter as tk
-        from tkinter.simpledialog import askstring
+        from tkinter import filedialog
+
+        result: list[tuple[str, str, str] | None] = [None]
+
         root = tk.Tk()
-        root.withdraw()
+        root.title("FortiGate Traffic Test Runner")
+        root.resizable(False, False)
         root.attributes("-topmost", True)
-        password = askstring("SSH Password", prompt, show="*", parent=root)
-        root.destroy()
-        return password or ""
+
+        pad: dict = {"padx": 10, "pady": 6}
+
+        tk.Label(root, text="Input file (CSV or XLSX):").grid(row=0, column=0, sticky="w", **pad)
+        file_var = tk.StringVar(value=default_file)
+        tk.Entry(root, textvariable=file_var, width=38).grid(row=0, column=1, **pad)
+
+        def browse() -> None:
+            path = filedialog.askopenfilename(
+                title="Select input file",
+                filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx"), ("All files", "*.*")],
+            )
+            if path:
+                file_var.set(path)
+
+        tk.Button(root, text="Browse…", command=browse).grid(row=0, column=2, padx=(0, 10), pady=6)
+
+        tk.Label(root, text="SSH username:").grid(row=1, column=0, sticky="w", **pad)
+        user_var = tk.StringVar()
+        tk.Entry(root, textvariable=user_var, width=38).grid(row=1, column=1, columnspan=2, sticky="w", **pad)
+
+        tk.Label(root, text="SSH password:").grid(row=2, column=0, sticky="w", **pad)
+        pw_var = tk.StringVar()
+        tk.Entry(root, textvariable=pw_var, show="*", width=38).grid(row=2, column=1, columnspan=2, sticky="w", **pad)
+
+        def on_ok() -> None:
+            result[0] = (file_var.get().strip().strip('"').strip("'"), user_var.get().strip(), pw_var.get())
+            root.destroy()
+
+        def on_cancel() -> None:
+            root.destroy()
+
+        btn_frame = tk.Frame(root)
+        btn_frame.grid(row=3, column=0, columnspan=3, pady=10)
+        tk.Button(btn_frame, text="OK", width=10, command=on_ok).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="Cancel", width=10, command=on_cancel).pack(side="left", padx=5)
+
+        root.bind("<Return>", lambda _e: on_ok())
+        root.bind("<Escape>", lambda _e: on_cancel())
+
+        root.update_idletasks()
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        w, h = root.winfo_reqwidth(), root.winfo_reqheight()
+        root.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
+
+        root.mainloop()
+        return result[0]
     except Exception:
-        return getpass.getpass(prompt)
+        return None
 
 
 def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     print("=" * 60)
     print("FortiGate Traffic Test Runner — Interactive Mode")
     print("=" * 60)
-    raw = input(f"Input file path (CSV or XLSX) [{args.input}]: ").strip().strip('"').strip("'")
-    if raw:
-        args.input = raw
-    username = input("SSH username (leave blank to skip): ").strip()
-    if username:
-        args.sshuser = username
-    password = _ask_password_gui("SSH password (leave blank to skip):")
-    if password:
-        args.sshpw = password
+
+    dialog_result = _show_inputs_dialog(args.input)
+    if dialog_result is not None:
+        file_path, username, password = dialog_result
+        if file_path:
+            args.input = file_path
+        if username:
+            args.sshuser = username
+        if password:
+            args.sshpw = password
+    else:
+        # Fallback to console if tkinter is unavailable
+        raw = input(f"Input file path (CSV or XLSX) [{args.input}]: ").strip().strip('"').strip("'")
+        if raw:
+            args.input = raw
+        username = input("SSH username (leave blank to skip): ").strip()
+        if username:
+            args.sshuser = username
+        password = getpass.getpass("SSH password (leave blank to skip): ")
+        if password:
+            args.sshpw = password
 
 
 def main() -> int:

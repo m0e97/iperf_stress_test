@@ -1609,7 +1609,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run FortiGate hub/spoke traffictest commands sequentially from CSV/XLSX input and generate an HTML report."
     )
-    parser.add_argument("--input", default=None, help="Path to a CSV or XLSX file containing spoke data.")
+    parser.add_argument("--input", default="devices.csv", help="Path to a CSV or XLSX file containing spoke data (default: devices.csv).")
     parser.add_argument("--sheet", help="Worksheet name to read when the input file is XLSX.")
     parser.add_argument(
         "--command",

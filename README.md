@@ -106,16 +106,18 @@ If your login needs a username, pass it via `--sshuser` or customize the command
 
 ## Basic Usage
 
-Use a CSV file with `spoke_ip`, `hub_ip`, and `speed` (defaults to `devices.csv`):
+Run with no arguments to open the interactive GUI:
 
 ```bash
 python main.py
 ```
 
-Or specify an input file explicitly:
+A dialog appears asking for the input file (defaults to `devices.csv`), SSH username, and SSH password. After you click **OK**, a progress window opens and streams all test output in real time. A **Close** button appears when the run finishes.
+
+Or pass arguments directly to skip the GUI entirely:
 
 ```bash
-python main.py --input spokes.csv
+python main.py --input spokes.csv --sshuser admin --sshpw mypassword
 ```
 
 Use one hub IP for all spokes:
@@ -132,14 +134,7 @@ python main.py --input spokes.xlsx --sheet Sheet1 --hub-ip 10.255.0.1
 
 ## SSH Credentials
 
-Use `--sshuser` and `--sshpw` to supply credentials:
-
-```bash
-python main.py --input spokes.csv --sshuser admin --sshpw
-SSH password:
-```
-
-`--sshpw` accepts an optional value. Provide the password directly as an argument, or pass the flag with no value to be prompted interactively with hidden characters:
+Use `--sshuser` and `--sshpw` to supply credentials on the command line:
 
 ```bash
 # Password as argument
@@ -150,13 +145,11 @@ python main.py --input spokes.csv --sshuser admin --sshpw
 SSH password:
 ```
 
+When running with no arguments, the GUI dialog collects the username and password. The password field is masked.
+
 ## Pure-Python SSH (Paramiko)
 
-On Windows, Paramiko is used by default — no external `ssh` or `sshpass` executables are needed. On Linux or macOS, the external `ssh` binary is used by default; pass `--paramiko` to switch.
-
-```bash
-python main.py --input spokes.csv --sshuser admin --sshpw
-```
+Paramiko is used by default on all platforms — no external `ssh` or `sshpass` executables are needed.
 
 Install Paramiko in the same Python environment as the script:
 
@@ -174,12 +167,6 @@ If you have already started the hub traffictest server manually, use `--skip-hub
 
 ```bash
 python main.py --input spokes.csv --sshuser admin --sshpw --skip-hub-setup
-```
-
-When running interactively (no arguments), the script prompts:
-
-```
-Hub traffictest server already running? Skip hub setup? [y/N]:
 ```
 
 ## SSH Username Or Options

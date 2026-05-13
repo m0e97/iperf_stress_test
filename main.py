@@ -4,6 +4,7 @@ import argparse
 import csv
 import getpass
 import html
+import queue
 import re
 import shlex
 import subprocess
@@ -1811,6 +1812,109 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class _TeeWriter:
+    """Forwards writes to both the original stream and a queue (line-buffered for the GUI)."""
+
+    def __init__(self, original: Any, q: "queue.Queue[str | None]") -> None:
+        self._original = original
+        self._q = q
+        self._buf = ""
+
+    def write(self, text: str) -> int:
+        self._original.write(text)
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            self._q.put(line)
+        return len(text)
+
+    def flush(self) -> None:
+        self._original.flush()
+
+    def fileno(self) -> int:
+        return self._original.fileno()
+
+
+def _show_progress_window(target_fn: "Any") -> int:
+    """Run target_fn() in a background thread, streaming its stdout into a GUI log window."""
+    try:
+        import tkinter as tk
+
+        msg_q: queue.Queue[str | None] = queue.Queue()
+        result_holder: list[int] = [0]
+
+        root = tk.Tk()
+        root.title("FortiGate Traffic Test Runner — Progress")
+        root.geometry("800x500")
+        root.configure(bg="#1e1e1e")
+        root.attributes("-topmost", True)
+
+        tk.Label(
+            root, text="FortiGate Traffic Test Runner",
+            bg="#1e1e1e", fg="#ffffff", font=("Segoe UI", 11, "bold"),
+        ).pack(pady=(12, 4))
+
+        frame = tk.Frame(root, bg="#1e1e1e")
+        frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+
+        sb = tk.Scrollbar(frame)
+        sb.pack(side="right", fill="y")
+
+        text_widget = tk.Text(
+            frame, wrap="word", state="disabled",
+            bg="#1e1e1e", fg="#d4d4d4",
+            font=("Courier New", 9), yscrollcommand=sb.set,
+            borderwidth=0, relief="flat",
+        )
+        text_widget.pack(side="left", fill="both", expand=True)
+        sb.config(command=text_widget.yview)
+
+        close_btn = tk.Button(
+            root, text="Close", state="disabled", command=root.destroy, width=12,
+        )
+        close_btn.pack(pady=(0, 12))
+
+        original_stdout = sys.stdout
+        sys.stdout = _TeeWriter(original_stdout, msg_q)
+
+        def _worker() -> None:
+            try:
+                result_holder[0] = target_fn()
+            except SystemExit as exc:
+                result_holder[0] = exc.code if isinstance(exc.code, int) else 1
+                msg_q.put(f"Exited with code {result_holder[0]}.")
+            except Exception as exc:
+                result_holder[0] = 1
+                msg_q.put(f"Unexpected error: {exc}")
+            finally:
+                sys.stdout = original_stdout
+                msg_q.put(None)
+
+        def _poll() -> None:
+            try:
+                while True:
+                    msg = msg_q.get_nowait()
+                    if msg is None:
+                        close_btn.config(state="normal")
+                        root.attributes("-topmost", False)
+                        return
+                    text_widget.config(state="normal")
+                    text_widget.insert("end", msg + "\n")
+                    text_widget.see("end")
+                    text_widget.config(state="disabled")
+            except queue.Empty:
+                pass
+            root.after(100, _poll)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        root.after(100, _poll)
+        root.mainloop()
+        return result_holder[0]
+
+    except Exception:
+        return target_fn()
+
+
 def _show_inputs_dialog(default_file: str) -> tuple[str, str, str] | None:
     """Show a GUI form for file path, username, and password. Returns (file, user, pw) or None on failure."""
     try:
@@ -1901,13 +2005,7 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
             args.sshpw = password
 
 
-def main() -> int:
-    parser = build_argument_parser()
-    args = parser.parse_args()
-
-    if len(sys.argv) == 1:
-        prompt_interactive_inputs(args)
-
+def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     input_path = Path(args.input).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
 
@@ -2280,6 +2378,17 @@ def main() -> int:
         f"failed: {summary['failed_sites']}"
     )
     return 0 if summary["failed_sites"] == 0 else 1
+
+
+def main() -> int:
+    parser = build_argument_parser()
+    args = parser.parse_args()
+
+    if len(sys.argv) == 1:
+        prompt_interactive_inputs(args)
+        return _show_progress_window(lambda: _run_tests(args, parser))
+
+    return _run_tests(args, parser)
 
 
 if __name__ == "__main__":

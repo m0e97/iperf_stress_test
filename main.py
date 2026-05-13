@@ -43,7 +43,7 @@ DEFAULT_DELAY_SECONDS = 0
 DEFAULT_TRAFFICTEST_PORT = "5201"
 DEFAULT_HUB_SERVER_INTF = "Mobily"
 DEFAULT_SPOKE_CLIENT_INTF = "wan1"
-DEFAULT_HUB_SERVER_START_DELAY_SECONDS = 60.0
+DEFAULT_HUB_SERVER_START_DELAY_SECONDS = 30.0
 DEFAULT_TRAFFICTEST_DURATION_SECONDS = 60
 DEFAULT_SSH_TEMPLATE = 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {target} "{remote_command}"'
 FORTIGATE_HUB_SETUP_COMMANDS = [
@@ -1902,6 +1902,7 @@ def _make_speedometer_icon_b64() -> str:
 
 
 _ICON_B64: str | None = None
+_gui_msg_queue: "queue.Queue[Any] | None" = None
 
 
 def _apply_window_icon(root: Any) -> None:
@@ -1944,8 +1945,11 @@ def _show_progress_window(target_fn: "Any") -> int:
     """Run target_fn() in a background thread, streaming its stdout into a GUI log window."""
     try:
         import tkinter as tk
+        from tkinter import messagebox
 
-        msg_q: queue.Queue[str | None] = queue.Queue()
+        global _gui_msg_queue
+        msg_q: queue.Queue[Any] = queue.Queue()
+        _gui_msg_queue = msg_q
         result_holder: list[int] = [0]
 
         root = tk.Tk()
@@ -1997,17 +2001,22 @@ def _show_progress_window(target_fn: "Any") -> int:
                 msg_q.put(None)
 
         def _poll() -> None:
+            global _gui_msg_queue
             try:
                 while True:
                     msg = msg_q.get_nowait()
                     if msg is None:
+                        _gui_msg_queue = None
                         close_btn.config(state="normal")
                         root.attributes("-topmost", False)
                         return
-                    text_widget.config(state="normal")
-                    text_widget.insert("end", msg + "\n")
-                    text_widget.see("end")
-                    text_widget.config(state="disabled")
+                    if isinstance(msg, tuple) and msg[0] == "error_dialog":
+                        messagebox.showerror(msg[1], msg[2], parent=root)
+                    else:
+                        text_widget.config(state="normal")
+                        text_widget.insert("end", msg + "\n")
+                        text_widget.see("end")
+                        text_widget.config(state="disabled")
             except queue.Empty:
                 pass
             root.after(100, _poll)
@@ -2333,14 +2342,18 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
 
             failed_hubs = [ip for ip, ctx in hub_contexts.items() if ctx.get("failed")]
             if failed_hubs:
+                error_lines: list[str] = []
                 for ip in failed_hubs:
-                    err = ""
                     ctx_results = hub_contexts[ip].get("setup_results", [])
-                    if ctx_results and ctx_results[0].error:
-                        err = f": {ctx_results[0].error}"
-                    print(f"  Hub {ip} — connection failed{err}", flush=True)
+                    err = ctx_results[0].error if ctx_results and ctx_results[0].error else "unknown error"
+                    line = f"Hub {ip}: {err}"
+                    error_lines.append(line)
+                    print(f"  {line}", flush=True)
                 if len(failed_hubs) == len(hub_contexts):
+                    msg = "Could not connect to any hub:\n\n" + "\n".join(error_lines)
                     print("All hubs failed to connect — aborting.", flush=True)
+                    if _gui_msg_queue is not None:
+                        _gui_msg_queue.put(("error_dialog", "Hub Connection Failed", msg))
                     now = datetime.now()
                     runs = []
                     for site in sites:
@@ -2353,6 +2366,13 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                     output_path.write_text(report_html, encoding="utf-8")
                     print(f"Report written to: {output_path}")
                     return 1
+                partial_msg = "\n".join(error_lines)
+                if _gui_msg_queue is not None:
+                    _gui_msg_queue.put((
+                        "error_dialog", "Some Hubs Failed",
+                        f"{len(failed_hubs)} of {len(hub_contexts)} hub(s) failed — "
+                        f"their spokes will be skipped.\n\n{partial_msg}",
+                    ))
                 print(
                     f"{len(failed_hubs)} of {len(hub_contexts)} hub(s) failed — "
                     f"their spokes will be skipped. Waiting {args.hub_server_start_delay:.0f}s "

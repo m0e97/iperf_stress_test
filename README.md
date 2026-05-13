@@ -10,9 +10,8 @@ This project contains a Python script, `main.py`, that runs FortiGate `diagnose 
 4. Waits for the hub servers to be ready (default 60 seconds).
 5. Groups spokes by their hub IP into per-hub queues.
 6. Runs all hub queues **in parallel** — within each queue, spokes are tested one at a time so only one spoke is active against its hub server at any moment.
-7. Each spoke test runs for a fixed duration (default 2 minutes).
-8. After all queues finish, stops every hub server.
-9. Captures spoke-side results only and generates an HTML report.
+7. After all queues finish, stops every hub server.
+8. Captures spoke-side results only and generates an HTML report.
 
 ## Built-In Speed Test Commands
 
@@ -27,15 +26,17 @@ diagnose traffictest port {traffictest_port}
 diagnose traffictest run -s
 ```
 
-Spoke commands run for each spoke in its hub queue:
+Spoke commands run for each spoke in its hub queue, all within a single SSH session per spoke:
 
 ```text
 diagnose traffictest client-intf {spoke_client_intf}
 diagnose traffictest port {traffictest_port}
-diagnose traffictest run -b {speed_with_margin} -c {hub_ip} -t {traffictest_duration}
+diagnose traffictest run -b {speed_with_margin} -c {hub_ip}
 ```
 
-Each placeholder is filled in per row: `{hub_server_intf}`, `{spoke_client_intf}`, and `{traffictest_port}` come from the input file (see [Input File](#input-file)) or fall back to `--hub-server-intf` / `--spoke-client-intf` / `--traffictest-port`. `{speed_with_margin}` is the row's speed plus 15%, `{hub_ip}` is the row's hub IP (or `--hub-ip` when set), and `{traffictest_duration}` is the test duration in seconds (default `120`).
+Each placeholder is filled in per row: `{hub_server_intf}`, `{spoke_client_intf}`, and `{traffictest_port}` come from the input file (see [Input File](#input-file)) or fall back to `--hub-server-intf` / `--spoke-client-intf` / `--traffictest-port`. `{speed_with_margin}` is the row's speed plus 15%, and `{hub_ip}` is the row's hub IP (or `--hub-ip` when set).
+
+All hub commands and all spoke commands each run in a single SSH shell session per device, so per-session settings such as `server-intf` and `client-intf` are preserved when the `run` command executes.
 
 The hub server command is started in the background because `diagnose traffictest run -s` stays running while it waits for spoke clients. After all spoke queues finish, the script stops and discards the hub server output — only spoke-side results appear in the report.
 
@@ -46,18 +47,18 @@ The hub server command is started in the background because `diagnose traffictes
 - SSH must work without interactive prompts during the script run.
 - FortiGate `diagnose traffictest` must be available on the firewalls.
 
-No external Python packages are required.
+No external Python packages are required unless you use `--paramiko` (which is the default on Windows).
 
 ## Input File
 
-The input file can be `.csv` or `.xlsx`.
+The input file can be `.csv` or `.xlsx`. The default file name is `devices.csv` — running `python main.py` with no arguments will look for `devices.csv` in the current directory.
 
 The script recognizes these column names, case-insensitively after normalizing spaces and symbols:
 
 | Purpose | Accepted Column Names |
 | --- | --- |
 | Spoke IP | `ip`, `host`, `address`, `spoke_ip`, `branch_ip`, `wan_ip` |
-| Hub IP (iperf3 target) | `hub_ip`, `hub`, `hub_host`, `hub_address`, `hub_wan_ip` |
+| Hub IP (traffictest target) | `hub_ip`, `hub`, `hub_host`, `hub_address`, `hub_wan_ip` |
 | Hub Management IP (SSH) | `hub_mgmt_ip`, `hub_management_ip`, `hub_ssh_ip`, `hub_admin_ip`, `hub_mgmt` |
 | Speed | `speed`, `rate`, `bandwidth`, `expected_speed`, `speed_mbps`, `bandwidth_mbps` |
 | Hub server interface | `server_intf`, `hub_server_intf`, `hub_intf`, `hub_interface`, `server_interface` |
@@ -82,26 +83,22 @@ You can also provide one hub IP for all rows with `--hub-ip`.
 To override the hub interface, spoke interface, or traffic-test port per row, add `server_intf`, `client_intf`, and `traffictest_port` columns. Rows that leave them blank fall back to `--hub-server-intf`, `--spoke-client-intf`, and `--traffictest-port` (defaults `Mobily`, `wan1`, and `5201`):
 
 ```csv
-spoke_ip,hub_ip,speed,server_intf,client_intf,traffictest_port
-10.10.10.1,10.255.0.1,100M,STC,wan2,5300
-10.10.20.1,10.255.0.1,200M,,,
+spoke_ip,hub_ip,hub_mgmt_ip,speed,server_intf,client_intf,traffictest_port
+10.10.10.1,10.255.0.1,10.1.0.1,100M,STC,wan2,5300
+10.10.20.1,10.255.0.1,10.1.0.1,200M,,,
 ```
 
 ## Firewall Name Discovery
 
-Before running the speed test for each spoke, the script runs this SSH command by default:
-
-```bash
-ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {spoke_ip} "get system status"
-```
-
-It looks for output like:
+Before running the speed test for each spoke, the script connects over SSH and runs `get system status`. It looks for output like:
 
 ```text
 Hostname: FW-Riyadh-01
 ```
 
-If your login needs a username, pass a custom command:
+The discovered name is used as the display name in the report. No output from this step appears in the report itself.
+
+If your login needs a username, pass it via `--sshuser` or customize the command:
 
 ```bash
 --firewall-name-command 'ssh admin@{spoke_ip} "get system status"'
@@ -109,38 +106,36 @@ If your login needs a username, pass a custom command:
 
 ## Basic Usage
 
-Use a CSV file with `spoke_ip`, `hub_ip`, and `speed`:
+Use a CSV file with `spoke_ip`, `hub_ip`, and `speed` (defaults to `devices.csv`):
 
 ```bash
-python3 main.py --input spokes.csv
+python main.py
+```
+
+Or specify an input file explicitly:
+
+```bash
+python main.py --input spokes.csv
 ```
 
 Use one hub IP for all spokes:
 
 ```bash
-python3 main.py \
-  --input spokes.csv \
-  --hub-ip 10.255.0.1
+python main.py --input spokes.csv --hub-ip 10.255.0.1
 ```
 
 Use an Excel file:
 
 ```bash
-python3 main.py \
-  --input spokes.xlsx \
-  --sheet Sheet1 \
-  --hub-ip 10.255.0.1
+python main.py --input spokes.xlsx --sheet Sheet1 --hub-ip 10.255.0.1
 ```
 
 ## SSH Credentials
 
-Use `--sshuser` and `--sshpw` to supply credentials without customizing the SSH template manually:
+Use `--sshuser` and `--sshpw` to supply credentials:
 
 ```bash
-python3 main.py \
-  --input spokes.csv \
-  --sshuser admin \
-  --sshpw
+python main.py --input spokes.csv --sshuser admin --sshpw
 SSH password:
 ```
 
@@ -148,27 +143,19 @@ SSH password:
 
 ```bash
 # Password as argument
-python3 main.py --input spokes.csv --sshuser admin --sshpw mypassword
+python main.py --input spokes.csv --sshuser admin --sshpw mypassword
 
 # Interactive prompt (characters hidden)
-python3 main.py --input spokes.csv --sshuser admin --sshpw
+python main.py --input spokes.csv --sshuser admin --sshpw
 SSH password:
 ```
 
-The password is passed to `sshpass` at runtime, so `sshpass` must be installed on the machine running the script. When only `--sshuser` is given, standard key-based authentication is used with the username prepended.
-
-These flags override both the built-in SSH template and the firewall name discovery command. If you need further control (custom port, identity file, etc.) use `--ssh-template` and `--firewall-name-command` directly.
-
 ## Pure-Python SSH (Paramiko)
 
-If external executables such as `ssh` or `sshpass` are blocked by group policy, use `--paramiko` to connect entirely through the Paramiko library (no external processes):
+On Windows, Paramiko is used by default — no external `ssh` or `sshpass` executables are needed. On Linux or macOS, the external `ssh` binary is used by default; pass `--paramiko` to switch.
 
 ```bash
-python3 main.py \
-  --input spokes.csv \
-  --sshuser admin \
-  --sshpw \
-  --paramiko
+python main.py --input spokes.csv --sshuser admin --sshpw
 ```
 
 Install Paramiko in the same Python environment as the script:
@@ -179,22 +166,35 @@ pip install paramiko
 
 ### Post-Logon Banner
 
-Some FortiGate devices display a disclaimer banner immediately after login. When `--paramiko` is used, the script detects the banner automatically and sends `a` to accept it before running any commands. No manual intervention is needed.
+Some FortiGate devices display a disclaimer banner immediately after login. When Paramiko is used, the script detects the banner automatically and sends `a` to accept it before running any commands. No manual intervention is needed.
+
+## Skipping Hub Setup
+
+If you have already started the hub traffictest server manually, use `--skip-hub-setup` to skip all hub SSH commands and run only the spoke-side test:
+
+```bash
+python main.py --input spokes.csv --sshuser admin --sshpw --skip-hub-setup
+```
+
+When running interactively (no arguments), the script prompts:
+
+```
+Hub traffictest server already running? Skip hub setup? [y/N]:
+```
 
 ## SSH Username Or Options
 
-The built-in FortiGate speed-test commands use this SSH wrapper by default:
+The built-in FortiGate speed-test commands use this SSH wrapper by default (on Linux/macOS):
 
 ```bash
 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {target} "{remote_command}"
 ```
 
-If you need a username without a password, you can use `--sshuser` (see above) or customize the template:
+To customize:
 
 ```bash
-python3 main.py \
+python main.py \
   --input spokes.csv \
-  --hub-ip 10.255.0.1 \
   --ssh-template 'ssh admin@{target} "{remote_command}"'
 ```
 
@@ -208,12 +208,12 @@ Defaults:
 | Spoke client interface | `wan1` |
 | Traffic-test port | `5201` |
 
-The hub interface, spoke interface, and traffic-test port can also come from the input file using the `server_intf`, `client_intf`, and `traffictest_port` columns (see the table above for accepted aliases). The CLI flags below act as a fallback for any row that leaves those columns empty.
+The hub interface, spoke interface, and traffic-test port can also come from the input file using the `server_intf`, `client_intf`, and `traffictest_port` columns. The CLI flags below act as a fallback for any row that leaves those columns empty.
 
 Override them like this:
 
 ```bash
-python3 main.py \
+python main.py \
   --input spokes.csv \
   --hub-ip 10.255.0.1 \
   --hub-server-intf Mobily \
@@ -226,7 +226,7 @@ python3 main.py \
 The script reads `speed` from the input file, converts it to Mbps, adds 15%, and uses that value in the spoke command:
 
 ```text
-diagnose traffictest run -b {speed_with_margin} -c {hub_ip} -t {traffictest_duration}
+diagnose traffictest run -b {speed_with_margin} -c {hub_ip}
 ```
 
 Example:
@@ -237,10 +237,6 @@ Example:
 | `200M` | `230M` |
 | `1G` | `1150M` |
 
-## Test Duration
-
-Each spoke test runs for up to `--traffictest-duration` seconds (default `60` seconds / 1 minute). The `-t` flag is passed directly to `diagnose traffictest run` on the spoke. The test stops as soon as it finishes naturally or when the duration elapses, whichever comes first. The script then captures the result and moves to the next spoke in the queue.
-
 ## Placeholders
 
 Command templates can use these placeholders:
@@ -248,7 +244,7 @@ Command templates can use these placeholders:
 | Placeholder | Meaning |
 | --- | --- |
 | `{spoke_ip}` or `{ip}` | Spoke firewall IP address |
-| `{hub_ip}` or `{hub}` | Hub firewall IP address |
+| `{hub_ip}` or `{hub}` | Hub firewall IP address (traffictest target) |
 | `{firewall_name}` | Firewall name discovered over SSH |
 | `{hostname}` | Same as discovered firewall name |
 | `{device_name}` | Same as discovered firewall name |
@@ -262,7 +258,7 @@ Command templates can use these placeholders:
 | `{hub_server_intf}` | Hub server interface |
 | `{spoke_client_intf}` | Spoke client interface |
 | `{traffictest_port}` or `{traffic_port}` | Traffic-test port |
-| `{traffictest_duration}` | Test duration in seconds (default `120`) |
+| `{traffictest_duration}` | Test duration in seconds (for custom commands) |
 | `{site_index}` | Row number, starting from 1 |
 
 ## Custom Commands
@@ -272,7 +268,7 @@ If you pass `--command` or `--command-file`, the script runs your custom command
 Example:
 
 ```bash
-python3 main.py \
+python main.py \
   --input spokes.csv \
   --command 'ssh admin@{spoke_ip} "get system status"'
 ```
@@ -282,7 +278,7 @@ You can pass `--command` more than once, and commands run in the order provided.
 To keep a long list of templates in a file, use `--command-file`:
 
 ```bash
-python3 main.py \
+python main.py \
   --input spokes.csv \
   --command-file commands.txt
 ```
@@ -300,24 +296,23 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 
 | Option | Description |
 | --- | --- |
-| `--input` | Required CSV or XLSX input file |
+| `--input` | CSV or XLSX input file (default: `devices.csv`) |
 | `--sheet` | Worksheet name when using XLSX |
-| `--hub-ip` | Hub IP for iperf3 (spoke target). If omitted, each row must have a `hub_ip` column |
+| `--hub-ip` | Hub IP for traffictest (spoke target). If omitted, each row must have a `hub_ip` column |
 | `--hub-mgmt-ip` | Hub management IP for SSH (setup commands). Falls back to `hub_ip` when omitted |
 | `--sshuser` | SSH username prepended to every target |
 | `--sshpw [PASSWORD]` | SSH password as a value, or omit the value to be prompted invisibly |
-| `--paramiko` | Use Paramiko (pure-Python SSH) instead of external `ssh`/`sshpass` executables |
+| `--paramiko` | Use Paramiko (pure-Python SSH) instead of external `ssh`/`sshpass` executables. Default on Windows |
 | `--skip-hub-setup` | Skip all hub SSH commands; assumes the hub traffictest server is already running |
-| `--ssh-template` | SSH wrapper for built-in hub/spoke traffictest commands |
+| `--ssh-template` | SSH wrapper for built-in hub/spoke traffictest commands (Linux/macOS only) |
 | `--hub-server-intf` | Hub interface for `server-intf`, default `Mobily` |
 | `--spoke-client-intf` | Spoke interface for `client-intf`, default `wan1` |
 | `--traffictest-port` | FortiGate traffictest port, default `5201` |
-| `--traffictest-duration` | Duration in seconds for each spoke test, default `120` |
 | `--hub-server-start-delay` | Seconds to wait after starting all hub servers before running spokes, default `60.0` |
 | `--firewall-name-command` | SSH command template used to discover spoke firewall name |
 | `--firewall-name-timeout` | Timeout for firewall name discovery, default `30` seconds |
 | `--delay-seconds` | Delay between spokes within the same hub queue, default `0` seconds |
-| `--timeout` | Timeout for each foreground command |
+| `--timeout` | Timeout for each foreground SSH command |
 | `--output` | HTML report path, default `traffic_test_report.html` |
 | `--dry-run` | Render commands and report without executing commands |
 
@@ -326,7 +321,7 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 Use `--dry-run` to verify command rendering before running real tests:
 
 ```bash
-python3 main.py \
+python main.py \
   --input spokes.csv \
   --hub-ip 10.255.0.1 \
   --dry-run
@@ -338,17 +333,11 @@ In dry-run mode, commands are not executed, so firewall names are not discovered
 
 The HTML report includes:
 
-- Total spokes.
-- Successful and failed spokes.
-- Total commands run.
-- Peak detected throughput.
-- Discovered firewall name.
-- Spoke IP and hub IP.
-- Configured speed.
-- Test bandwidth with 15% margin.
+- Total, successful, and failed sites.
+- Peak detected throughput across all sites.
+- Per-site: discovered firewall name, IP, hub IP, configured speed, test bandwidth, status badge, peak throughput, retransmissions, duration.
 - Spoke command output, return codes, errors, and durations.
-
-Hub-side command output is not included in the report.
+- Hub setup and server command results (when hub setup is not skipped).
 
 ## Troubleshooting
 
@@ -363,9 +352,15 @@ If the built-in speed test does not run:
 
 - Confirm every row has `hub_ip`, or pass `--hub-ip`.
 - Confirm every row has a valid `speed`.
-- Confirm the hub interface is really `Mobily`.
-- Confirm the spoke interface is really `wan1`.
+- Confirm the hub interface is correct (default `Mobily`).
+- Confirm the spoke interface is correct (default `wan1`).
 - Confirm TCP port `5201` is allowed between hub and spoke.
+
+If Paramiko is not available on Windows:
+
+```bash
+pip install paramiko
+```
 
 If the report shows failed commands:
 

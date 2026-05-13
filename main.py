@@ -1862,12 +1862,9 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     print("=" * 60)
     print("FortiGate Traffic Test Runner — Interactive Mode")
     print("=" * 60)
-    while True:
-        raw = input("Input file path (CSV or XLSX): ").strip().strip('"').strip("'")
-        if raw:
-            args.input = raw
-            break
-        print("  File path cannot be empty.")
+    raw = input(f"Input file path (CSV or XLSX) [{args.input}]: ").strip().strip('"').strip("'")
+    if raw:
+        args.input = raw
     username = input("SSH username (leave blank to skip): ").strip()
     if username:
         args.sshuser = username
@@ -1881,9 +1878,6 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     password = _read_password_hidden("SSH password (leave blank to skip): ")
     if password:
         args.sshpw = password
-    skip_hub_answer = input("Hub traffictest server already running? Skip hub setup? [y/N]: ").strip().lower()
-    if skip_hub_answer == "y":
-        args.skip_hub_setup = True
 
 
 def main() -> int:

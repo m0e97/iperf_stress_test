@@ -1035,6 +1035,74 @@ def _paramiko_hub_session(
     return setup_results, server_initial, handle
 
 
+def _paramiko_spoke_session(
+    site: SiteDefinition,
+    templates: list[str],
+    timeout: int | None,
+    dry_run: bool,
+) -> list[CommandResult]:
+    """Run all spoke commands in one Paramiko shell so per-session settings persist."""
+    host = site.ip_address
+    cmd_prefix = f"[paramiko] {_paramiko_user}@{host}: "
+
+    if dry_run:
+        now = datetime.now()
+        return [
+            CommandResult(
+                template=t, command=cmd_prefix + render_template(t, site),
+                started_at=now, ended_at=now,
+                return_code=0, stdout="dry-run: command not executed", stderr="",
+            )
+            for t in templates
+        ]
+
+    try:
+        client = _paramiko_connect(host, timeout)
+        shell = _paramiko_open_shell(client, timeout)
+    except Exception as exc:
+        now = datetime.now()
+        return [CommandResult(
+            template=templates[0] if templates else "",
+            command=cmd_prefix + "(connect)",
+            started_at=now, ended_at=now,
+            return_code=None, stdout="", stderr="", error=str(exc),
+        )]
+
+    results: list[CommandResult] = []
+    try:
+        for i, template in enumerate(templates):
+            rendered = render_template(template, site)
+            cmd_label = cmd_prefix + rendered
+            started_at = datetime.now()
+            # The last command is the traffictest run — wait indefinitely for it to finish.
+            cmd_timeout = None if i == len(templates) - 1 else (timeout or 30)
+            try:
+                shell.send(rendered + "\n")
+                raw = _shell_read_until_prompt(shell, timeout=cmd_timeout)
+                stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
+                ended_at = datetime.now()
+                results.append(CommandResult(
+                    template=template, command=cmd_label,
+                    started_at=started_at, ended_at=ended_at,
+                    return_code=0, stdout=stdout, stderr="",
+                ))
+            except Exception as exc:
+                ended_at = datetime.now()
+                results.append(CommandResult(
+                    template=template, command=cmd_label,
+                    started_at=started_at, ended_at=ended_at,
+                    return_code=None, stdout="", stderr="", error=str(exc),
+                ))
+                break
+    finally:
+        try:
+            shell.close()
+            client.close()
+        except Exception:
+            pass
+    return results
+
+
 def _exec_ssh(
     site: SiteDefinition,
     target: str,
@@ -1227,12 +1295,15 @@ def run_fortigate_traffictest_site(
             )
             hub_server_process = None
 
-    for remote_template in FORTIGATE_SPOKE_COMMANDS:
-        command, error_result = build_ssh_command_or_error(site, args.ssh_template, site.ip_address, remote_template)
-        if error_result is not None:
-            results.append(error_result)
-            continue
-        results.append(run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run))
+    if _use_paramiko:
+        results.extend(_paramiko_spoke_session(site, FORTIGATE_SPOKE_COMMANDS, args.timeout, args.dry_run))
+    else:
+        for remote_template in FORTIGATE_SPOKE_COMMANDS:
+            command, error_result = build_ssh_command_or_error(site, args.ssh_template, site.ip_address, remote_template)
+            if error_result is not None:
+                results.append(error_result)
+                continue
+            results.append(run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run))
 
     if hub_server_process is not None and hub_server_result_index is not None:
         results[hub_server_result_index] = finalize_background_command(
@@ -1257,12 +1328,15 @@ def run_fortigate_spoke_only(
     name_discovery_result: CommandResult | None = None,
 ) -> SiteRun:
     started_at = datetime.now()
-    results: list[CommandResult] = []
 
-    for remote_template in FORTIGATE_SPOKE_COMMANDS:
-        results.append(
-            _exec_ssh(site, site.ip_address, remote_template, args.ssh_template, args.timeout, args.dry_run)
-        )
+    if _use_paramiko:
+        results = _paramiko_spoke_session(site, FORTIGATE_SPOKE_COMMANDS, args.timeout, args.dry_run)
+    else:
+        results = []
+        for remote_template in FORTIGATE_SPOKE_COMMANDS:
+            results.append(
+                _exec_ssh(site, site.ip_address, remote_template, args.ssh_template, args.timeout, args.dry_run)
+            )
 
     ended_at = datetime.now()
     return SiteRun(
@@ -1849,7 +1923,7 @@ def main() -> int:
     parser = build_argument_parser()
     args = parser.parse_args()
 
-    if args.input is None:
+    if len(sys.argv) == 1:
         prompt_interactive_inputs(args)
 
     input_path = Path(args.input).expanduser().resolve()

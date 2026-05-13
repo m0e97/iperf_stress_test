@@ -1714,10 +1714,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--paramiko",
         action="store_true",
-        default=sys.platform == "win32",
+        default=True,
         help=(
             "Use the Paramiko Python library for SSH instead of external binaries. "
-            "Requires: pip install paramiko. Default on Windows."
+            "Requires: pip install paramiko. Enabled by default."
         ),
     )
     parser.add_argument(
@@ -1868,13 +1868,6 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     username = input("SSH username (leave blank to skip): ").strip()
     if username:
         args.sshuser = username
-    plink_path = input("plink.exe path (leave blank to use standard ssh): ").strip().strip('"').strip("'")
-    if plink_path:
-        args.plink = plink_path
-    if not args.plink:
-        use_paramiko_answer = input("Use Paramiko for SSH? Needed on Windows without ssh/plink [y/N]: ").strip().lower()
-        if use_paramiko_answer == "y":
-            args.paramiko = True
     password = _read_password_hidden("SSH password (leave blank to skip): ")
     if password:
         args.sshpw = password

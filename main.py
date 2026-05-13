@@ -783,10 +783,10 @@ def _shell_recv_chunk(shell: Any) -> str:
     return ""
 
 
-def _shell_read_until_prompt(shell: Any, timeout: float) -> str:
+def _shell_read_until_prompt(shell: Any, timeout: float | None) -> str:
     output = ""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = (time.time() + timeout) if timeout is not None else None
+    while deadline is None or time.time() < deadline:
         chunk = _shell_recv_chunk(shell)
         if chunk:
             output += chunk
@@ -1081,10 +1081,14 @@ def _paramiko_spoke_session(
                 raw = _shell_read_until_prompt(shell, timeout=cmd_timeout)
                 stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
                 ended_at = datetime.now()
+                throughput_mbps, throughput_label, retransmissions = extract_throughput(stdout)
                 results.append(CommandResult(
                     template=template, command=cmd_label,
                     started_at=started_at, ended_at=ended_at,
                     return_code=0, stdout=stdout, stderr="",
+                    throughput_mbps=throughput_mbps,
+                    throughput_label=throughput_label,
+                    retransmissions=retransmissions,
                 ))
             except Exception as exc:
                 ended_at = datetime.now()

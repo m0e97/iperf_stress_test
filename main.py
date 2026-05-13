@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-import ctypes
-import ctypes.wintypes
 import getpass
 import html
-import msvcrt
 import re
 import shlex
 import subprocess
@@ -1816,48 +1813,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _read_password_hidden(prompt: str) -> str:
-    sys.stderr.write(prompt)
-    sys.stderr.flush()
-    # Try to disable echo via Windows console API (works in real consoles and
-    # ConPTY terminals such as Windows Terminal or VSCode integrated terminal).
-    kernel32 = ctypes.windll.kernel32
-    h_stdin = kernel32.GetStdHandle(-10)
-    old_mode = ctypes.wintypes.DWORD()
-    echo_disabled = bool(
-        kernel32.GetConsoleMode(h_stdin, ctypes.byref(old_mode))
-        and kernel32.SetConsoleMode(h_stdin, old_mode.value & ~0x0004)
-    )
-    if not echo_disabled:
-        # stdin is a pipe or IDE console (PyCharm run panel, etc.) — just use
-        # plain input; characters will be visible.
-        return input()
-    try:
-        chars: list[str] = []
-        while True:
-            ch = msvcrt.getwch()
-            if ch in ("\r", "\n"):
-                break
-            if ch == "\x03":
-                raise KeyboardInterrupt
-            if ch == "\x08":
-                if chars:
-                    chars.pop()
-                    sys.stderr.write("\b \b")
-                    sys.stderr.flush()
-            else:
-                chars.append(ch)
-                sys.stderr.write("*")
-                sys.stderr.flush()
-        sys.stderr.write("\n")
-        sys.stderr.flush()
-        return "".join(chars)
-    except Exception:
-        return input()
-    finally:
-        kernel32.SetConsoleMode(h_stdin, old_mode.value)
-
-
 def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     print("=" * 60)
     print("FortiGate Traffic Test Runner — Interactive Mode")
@@ -1868,7 +1823,7 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
     username = input("SSH username (leave blank to skip): ").strip()
     if username:
         args.sshuser = username
-    password = _read_password_hidden("SSH password (leave blank to skip): ")
+    password = getpass.getpass("SSH password (leave blank to skip): ")
     if password:
         args.sshpw = password
 

@@ -1185,16 +1185,12 @@ def render_template(
     return template.format_map(build_template_values(site, extra_values))
 
 
-def render_command(template: str, site: SiteDefinition) -> str:
-    return render_template(template, site)
-
-
 def render_command_or_error(
     template: str,
     site: SiteDefinition,
 ) -> tuple[str | None, CommandResult | None]:
     try:
-        command = render_command(template, site)
+        command = render_template(template, site)
     except KeyError as error:
         moment = datetime.now()
         return None, CommandResult(
@@ -1249,72 +1245,6 @@ def run_site(
             results.append(error_result)
             continue
         results.append(run_rendered_command(template, command, timeout=timeout, dry_run=dry_run))
-
-    ended_at = datetime.now()
-    return SiteRun(
-        site=site,
-        started_at=started_at,
-        ended_at=ended_at,
-        command_results=results,
-        name_discovery_result=name_discovery_result,
-    )
-
-
-def run_fortigate_traffictest_site(
-    site: SiteDefinition,
-    args: argparse.Namespace,
-    name_discovery_result: CommandResult | None = None,
-) -> SiteRun:
-    started_at = datetime.now()
-    results: list[CommandResult] = []
-    hub_server_process: subprocess.Popen[str] | None = None
-    hub_server_result_index: int | None = None
-
-    for remote_template in FORTIGATE_HUB_SETUP_COMMANDS:
-        command, error_result = build_ssh_command_or_error(site, args.ssh_template, site.hub_ip, remote_template)
-        if error_result is not None:
-            results.append(error_result)
-            continue
-        results.append(run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run))
-
-    command, error_result = build_ssh_command_or_error(
-        site, args.ssh_template, site.hub_ip, FORTIGATE_HUB_SERVER_COMMAND
-    )
-    if error_result is not None:
-        results.append(error_result)
-    else:
-        initial_result, hub_server_process = start_background_command(
-            FORTIGATE_HUB_SERVER_COMMAND, command, dry_run=args.dry_run
-        )
-        hub_server_result_index = len(results)
-        results.append(initial_result)
-
-    if hub_server_process is not None and hub_server_result_index is not None:
-        time.sleep(args.hub_server_start_delay)
-        if hub_server_process.poll() is not None:
-            results[hub_server_result_index] = finalize_background_command(
-                results[hub_server_result_index],
-                hub_server_process,
-                stop_if_running=False,
-            )
-            hub_server_process = None
-
-    if _use_paramiko:
-        results.extend(_paramiko_spoke_session(site, FORTIGATE_SPOKE_COMMANDS, args.timeout, args.dry_run))
-    else:
-        for remote_template in FORTIGATE_SPOKE_COMMANDS:
-            command, error_result = build_ssh_command_or_error(site, args.ssh_template, site.ip_address, remote_template)
-            if error_result is not None:
-                results.append(error_result)
-                continue
-            results.append(run_rendered_command(remote_template, command, timeout=args.timeout, dry_run=args.dry_run))
-
-    if hub_server_process is not None and hub_server_result_index is not None:
-        results[hub_server_result_index] = finalize_background_command(
-            results[hub_server_result_index],
-            hub_server_process,
-            stop_if_running=True,
-        )
 
     ended_at = datetime.now()
     return SiteRun(
@@ -2062,9 +1992,7 @@ def main() -> int:
         for site in sites:
             hub_queues[site.hub_ip].append(site)
 
-        if not args.skip_hub_setup:
-            # Setup every hub in parallel: run the two setup commands then start the server.
-            hub_contexts_lock = threading.Lock()
+        hub_contexts_lock = threading.Lock()
 
         def _setup_one_hub(hub_ip: str, rep_site: SiteDefinition) -> None:
             ssh_target = rep_site.hub_mgmt_ip or hub_ip

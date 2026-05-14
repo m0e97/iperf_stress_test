@@ -1416,8 +1416,8 @@ def build_html_report(
               <td>{speed}</td>
               <td>{ip}</td>
               <td>{hub_ip}</td>
-              <td>{sender}</td>
               <td>{test_speed}</td>
+              <td>{sender}</td>
               <td>{started}</td>
               <td><span class="badge {result_class}">{result_label}</span></td>
             </tr>
@@ -1642,8 +1642,8 @@ def build_html_report(
             <th>Speed</th>
             <th>IP</th>
             <th>Hub</th>
-            <th>Actual bandwidth</th>
             <th>Generated traffic</th>
+            <th>Actual bandwidth</th>
             <th>Started</th>
             <th>Result</th>
           </tr>
@@ -1685,7 +1685,7 @@ def build_excel_report(results: list[SiteRun], summary: dict[str, Any], output_p
     ws = wb.active
     ws.title = "Results"
 
-    headers = ["#", "Site Name", "Speed", "IP", "Hub IP", "Actual Bandwidth", "Generated Traffic", "Started", "Result"]
+    headers = ["#", "Site Name", "Speed", "IP", "Hub IP", "Generated Traffic", "Actual Bandwidth", "Started", "Result"]
     ws.append(headers)
     for cell in ws[1]:
         cell.fill = PatternFill("solid", fgColor="2D2D2D")
@@ -1705,8 +1705,8 @@ def build_excel_report(results: list[SiteRun], summary: dict[str, Any], output_p
             site_run.site.speed or "N/A",
             site_run.site.ip_address or "N/A",
             _hub_display(site_run.site),
-            format_peak(site_run.max_sender_throughput_mbps),
             site_run.site.speed_with_margin_label or "N/A",
+            format_peak(site_run.max_sender_throughput_mbps),
             format_timestamp(site_run.started_at),
             result_label,
         ])
@@ -1762,7 +1762,7 @@ def build_pdf_report(results: list[SiteRun], summary: dict[str, Any], output_pat
     ))
     elements.append(Spacer(1, 12))
 
-    col_headers = ["#", "Site Name", "Speed", "IP", "Hub IP", "Actual BW", "Generated Traffic", "Started", "Result"]
+    col_headers = ["#", "Site Name", "Speed", "IP", "Hub IP", "Generated Traffic", "Actual BW", "Started", "Result"]
     data: list[list[str]] = [col_headers]
     result_classes: list[str] = []
 
@@ -1775,8 +1775,8 @@ def build_pdf_report(results: list[SiteRun], summary: dict[str, Any], output_pat
             site_run.site.speed or "N/A",
             site_run.site.ip_address or "N/A",
             _hub_display(site_run.site),
-            format_peak(site_run.max_sender_throughput_mbps),
             site_run.site.speed_with_margin_label or "N/A",
+            format_peak(site_run.max_sender_throughput_mbps),
             format_timestamp(site_run.started_at),
             result_label,
         ])

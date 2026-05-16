@@ -5,7 +5,7 @@ This project contains a Python script, `main.py`, that runs FortiGate `diagnose 
 It is available in three forms:
 
 - **CLI / interactive GUI** — `python main.py ...` (see [Basic Usage](#basic-usage)).
-- **Web app** — a FastAPI front-end at `http://localhost:8000` (see [Web Application](#web-application)).
+- **Web app** — a FastAPI front-end at `http://localhost:8800` (see [Web Application](#web-application)).
 - **Docker container** — image bundling the web app (see [Docker](#docker)).
 
 The web app and Docker image are thin wrappers around the same `main.py` engine — every CLI flag is exposed as a form field.
@@ -376,10 +376,10 @@ A FastAPI web front-end is included in [`webapp/`](webapp/). It mirrors every CL
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn webapp.app:app --host 0.0.0.0 --port 8000
+uvicorn webapp.app:app --host 0.0.0.0 --port 8800
 ```
 
-Then open <http://localhost:8000>.
+Then open <http://localhost:8800>.
 
 Uploaded input files and generated reports are stored under `./data/` by default. Override the location with the `IPERF_DATA_DIR` environment variable.
 
@@ -413,7 +413,7 @@ A `Dockerfile` and `docker-compose.yml` are included.
 docker compose up --build
 ```
 
-Then open <http://localhost:8000>. Uploads and reports persist on the host under `./data/`.
+Then open <http://localhost:8800>. Uploads and reports persist on the host under `./data/`.
 
 ### Network Reachability
 
@@ -423,7 +423,7 @@ The container needs network access to your hub and spoke firewalls (SSH on TCP 2
 
 ```bash
 docker build -t iperf-stress-test .
-docker run --rm -p 8000:8000 -v "$(pwd)/data:/data" iperf-stress-test
+docker run --rm -p 8800:8800 -v "$(pwd)/data:/data" iperf-stress-test
 ```
 
 ### Environment

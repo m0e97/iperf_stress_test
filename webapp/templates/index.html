@@ -15,10 +15,6 @@
                 Input file (CSV or XLSX)
                 <input type="file" name="input_file" accept=".csv,.xlsx" required>
             </label>
-            <label>
-                Sheet name (XLSX only, optional)
-                <input type="text" name="sheet" placeholder="Sheet1">
-            </label>
         </fieldset>
 
         <fieldset>
@@ -85,15 +81,6 @@
                 <input type="checkbox" name="dry_run" value="true">
                 Dry run (render commands and report without executing)
             </label>
-        </fieldset>
-
-        <fieldset>
-            <legend>Custom commands (optional)</legend>
-            <p class="muted">
-                Leave blank to use the built-in FortiGate hub/spoke traffictest flow.
-                One template per line. Lines starting with <code>#</code> are ignored.
-            </p>
-            <textarea name="commands" rows="5" placeholder='ssh admin@{spoke_ip} "get system status"'></textarea>
         </fieldset>
 
         <button type="submit">Start Run</button>

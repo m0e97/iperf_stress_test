@@ -16,8 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py ./
 COPY webapp ./webapp
 
-RUN mkdir -p /data/uploads /data/reports /data/commands
+RUN mkdir -p /data/uploads /data/reports
 
-EXPOSE 8000
+EXPOSE 8800
 
-CMD ["uvicorn", "webapp.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "webapp.app:app", "--host", "0.0.0.0", "--port", "8800"]

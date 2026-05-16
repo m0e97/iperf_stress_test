@@ -26,8 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(__import__("os").environ.get("IPERF_DATA_DIR", str(ROOT / "data"))).resolve()
 UPLOAD_DIR = DATA_DIR / "uploads"
 REPORTS_DIR = DATA_DIR / "reports"
-COMMANDS_DIR = DATA_DIR / "commands"
-for d in (UPLOAD_DIR, REPORTS_DIR, COMMANDS_DIR):
+for d in (UPLOAD_DIR, REPORTS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(ROOT))
@@ -100,7 +99,6 @@ def _build_argv(
     *,
     input_path: Path,
     output_path: Path,
-    sheet: str,
     sshuser: str,
     hub_ip: str,
     hub_mgmt_ip: str,
@@ -113,7 +111,6 @@ def _build_argv(
     timeout: int | None,
     skip_hub_setup: bool,
     dry_run: bool,
-    command_file: Path | None,
 ) -> list[str]:
     argv: list[str] = [
         "--input", str(input_path),
@@ -126,8 +123,6 @@ def _build_argv(
         "--hub-server-start-delay", str(hub_server_start_delay),
         "--delay-seconds", str(delay_seconds),
     ]
-    if sheet:
-        argv += ["--sheet", sheet]
     if sshuser:
         argv += ["--sshuser", sshuser]
     if hub_ip:
@@ -140,8 +135,6 @@ def _build_argv(
         argv += ["--skip-hub-setup"]
     if dry_run:
         argv += ["--dry-run"]
-    if command_file is not None:
-        argv += ["--command-file", str(command_file)]
     return argv
 
 
@@ -215,7 +208,6 @@ def index(request: Request):
 @app.post("/run")
 async def start_run(
     input_file: UploadFile,
-    sheet: str = Form(""),
     sshuser: str = Form(""),
     sshpw: str = Form(""),
     hub_ip: str = Form(""),
@@ -229,7 +221,6 @@ async def start_run(
     timeout: int = Form(0),
     skip_hub_setup: bool = Form(False),
     dry_run: bool = Form(False),
-    commands: str = Form(""),
 ):
     global ACTIVE_JOB_ID
     with JOBS_LOCK:
@@ -250,12 +241,6 @@ async def start_run(
     with upload_path.open("wb") as fh:
         shutil.copyfileobj(input_file.file, fh)
 
-    command_file_path: Path | None = None
-    cleaned_commands = [ln.strip() for ln in commands.splitlines() if ln.strip() and not ln.strip().startswith("#")]
-    if cleaned_commands:
-        command_file_path = COMMANDS_DIR / f"{job_id}.txt"
-        command_file_path.write_text("\n".join(cleaned_commands) + "\n", encoding="utf-8")
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_basename = f"traffic_test_report_{timestamp}_{job_id}"
     output_path = REPORTS_DIR / f"{report_basename}.html"
@@ -264,7 +249,6 @@ async def start_run(
     argv = _build_argv(
         input_path=upload_path,
         output_path=output_path,
-        sheet=sheet,
         sshuser=sshuser,
         hub_ip=hub_ip,
         hub_mgmt_ip=hub_mgmt_ip,
@@ -277,7 +261,6 @@ async def start_run(
         timeout=timeout if timeout > 0 else None,
         skip_hub_setup=skip_hub_setup,
         dry_run=dry_run,
-        command_file=command_file_path,
     )
 
     thread = threading.Thread(target=_run_job, args=(job, argv, sshpw), daemon=True)

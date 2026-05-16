@@ -4,7 +4,7 @@ services:
     image: iperf-stress-test:latest
     container_name: iperf-stress-test
     ports:
-      - "8000:8000"
+      - "8800:8800"
     volumes:
       - ./data:/data
     restart: unless-stopped

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Run {{ job.id }} — FortiGate Traffic Test Runner{% endblock %}
+{% block content %}
+<section class="card">
+    <h1>Run <code>{{ job.id }}</code></h1>
+    <p>
+        Input: <code>{{ job.input_name }}</code>
+        &middot; Started: {{ job.started_at.strftime("%Y-%m-%d %H:%M:%S") }}
+        &middot; Status: <span id="status" class="badge">{{ job.status }}</span>
+    </p>
+
+    <pre id="log" class="log"></pre>
+
+    <div id="results" class="results" hidden>
+        <h2>Reports</h2>
+        <ul id="report-list"></ul>
+        <p><a href="/">Start another run</a></p>
+    </div>
+</section>
+
+<script>
+(function () {
+    const jobId = "{{ job.id }}";
+    const logEl = document.getElementById("log");
+    const statusEl = document.getElementById("status");
+    const resultsEl = document.getElementById("results");
+    const reportListEl = document.getElementById("report-list");
+
+    const source = new EventSource(`/run/${jobId}/stream`);
+    source.onmessage = function (event) {
+        logEl.textContent += event.data + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+    };
+    source.addEventListener("end", function () {
+        source.close();
+        fetch(`/run/${jobId}/status`).then(r => r.json()).then(data => {
+            statusEl.textContent = data.status + (data.exit_code !== null ? ` (exit ${data.exit_code})` : "");
+            statusEl.classList.add(data.status === "done" && data.exit_code === 0 ? "ok" : "err");
+            if (data.reports && data.reports.length) {
+                reportListEl.innerHTML = "";
+                for (const r of data.reports) {
+                    const li = document.createElement("li");
+                    const a = document.createElement("a");
+                    a.href = r.url;
+                    a.textContent = `${r.label} report`;
+                    a.target = r.label === "HTML" ? "_blank" : "_self";
+                    li.appendChild(a);
+                    reportListEl.appendChild(li);
+                }
+                resultsEl.hidden = false;
+            }
+        });
+    });
+    source.onerror = function () {
+        // Browser will retry automatically; status polling on close handles final state.
+    };
+})();
+</script>
+{% endblock %}

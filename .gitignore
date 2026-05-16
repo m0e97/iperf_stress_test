@@ -2,3 +2,12 @@ __pycache__/
 *.py[cod]
 .claude/
 devices.csv
+.venv/
+data/
+Reports/
+/*.html
+/*.xlsx
+/*.pdf
+traffic_test_report_*.html
+traffic_test_report_*.xlsx
+traffic_test_report_*.pdf

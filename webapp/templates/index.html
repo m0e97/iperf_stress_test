@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+    <h1>Start a Test Run</h1>
+    {% if active_job_id %}
+    <div class="banner warn">
+        A run is already in progress: <a href="/run/{{ active_job_id }}">job {{ active_job_id }}</a>.
+        Starting a new run will be rejected until that one finishes.
+    </div>
+    {% endif %}
+    <form action="/run" method="post" enctype="multipart/form-data">
+        <fieldset>
+            <legend>Input</legend>
+            <label>
+                Input file (CSV or XLSX)
+                <input type="file" name="input_file" accept=".csv,.xlsx" required>
+            </label>
+            <label>
+                Sheet name (XLSX only, optional)
+                <input type="text" name="sheet" placeholder="Sheet1">
+            </label>
+        </fieldset>
+
+        <fieldset>
+            <legend>SSH Credentials</legend>
+            <label>
+                SSH username
+                <input type="text" name="sshuser" autocomplete="username" required>
+            </label>
+            <label>
+                SSH password
+                <input type="password" name="sshpw" autocomplete="current-password" required>
+            </label>
+        </fieldset>
+
+        <fieldset>
+            <legend>Overrides (optional)</legend>
+            <div class="grid">
+                <label>
+                    Hub IP (applies to all rows)
+                    <input type="text" name="hub_ip">
+                </label>
+                <label>
+                    Hub management IP
+                    <input type="text" name="hub_mgmt_ip">
+                </label>
+                <label>
+                    Hub server interface
+                    <input type="text" name="hub_server_intf" placeholder="{{ defaults.hub_server_intf }}">
+                </label>
+                <label>
+                    Spoke client interface
+                    <input type="text" name="spoke_client_intf" placeholder="{{ defaults.spoke_client_intf }}">
+                </label>
+                <label>
+                    Traffictest port
+                    <input type="text" name="traffictest_port" placeholder="{{ defaults.traffictest_port }}">
+                </label>
+                <label>
+                    Traffictest duration (s)
+                    <input type="number" name="traffictest_duration" value="{{ defaults.traffictest_duration }}" min="1">
+                </label>
+                <label>
+                    Hub server start delay (s)
+                    <input type="number" step="0.1" name="hub_server_start_delay" value="{{ defaults.hub_server_start_delay }}" min="0">
+                </label>
+                <label>
+                    Delay between spokes per hub (s)
+                    <input type="number" name="delay_seconds" value="{{ defaults.delay_seconds }}" min="0">
+                </label>
+                <label>
+                    Per-command timeout (s, 0 = none)
+                    <input type="number" name="timeout" value="0" min="0">
+                </label>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Mode</legend>
+            <label class="inline">
+                <input type="checkbox" name="skip_hub_setup" value="true">
+                Skip hub setup (hub traffictest server is already running)
+            </label>
+            <label class="inline">
+                <input type="checkbox" name="dry_run" value="true">
+                Dry run (render commands and report without executing)
+            </label>
+        </fieldset>
+
+        <fieldset>
+            <legend>Custom commands (optional)</legend>
+            <p class="muted">
+                Leave blank to use the built-in FortiGate hub/spoke traffictest flow.
+                One template per line. Lines starting with <code>#</code> are ignored.
+            </p>
+            <textarea name="commands" rows="5" placeholder='ssh admin@{spoke_ip} "get system status"'></textarea>
+        </fieldset>
+
+        <button type="submit">Start Run</button>
+    </form>
+</section>
+{% endblock %}

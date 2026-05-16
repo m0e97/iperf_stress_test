@@ -1,0 +1,12 @@
+services:
+  iperf-runner:
+    build: .
+    image: iperf-stress-test:latest
+    container_name: iperf-stress-test
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    # Uncomment if firewalls are reachable only from the host network:
+    # network_mode: host

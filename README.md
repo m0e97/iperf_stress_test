@@ -2,6 +2,14 @@
 
 This project contains a Python script, `main.py`, that runs FortiGate `diagnose traffictest` speed tests for multiple spokes from a CSV or Excel file. It discovers the firewall name over SSH, coordinates hub and spoke traffic-test commands, and writes an HTML report.
 
+It is available in three forms:
+
+- **CLI / interactive GUI** — `python main.py ...` (see [Basic Usage](#basic-usage)).
+- **Web app** — a FastAPI front-end at `http://localhost:8000` (see [Web Application](#web-application)).
+- **Docker container** — image bundling the web app (see [Docker](#docker)).
+
+The web app and Docker image are thin wrappers around the same `main.py` engine — every CLI flag is exposed as a form field.
+
 ## What The Script Does
 
 1. Reads all rows from the input file and collects every unique hub IP.
@@ -357,3 +365,69 @@ If the report shows failed commands:
 ## Exit Code
 
 The script exits with `0` when every spoke run succeeds and with `1` when at least one spoke has any failed or template-error command. The HTML report is written either way.
+
+## Web Application
+
+A FastAPI web front-end is included in [`webapp/`](webapp/). It mirrors every CLI option as a form field, streams live test output to the browser via Server-Sent Events, and serves the generated HTML/Excel/PDF reports.
+
+### Run Locally
+
+```bash
+python -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn webapp.app:app --host 0.0.0.0 --port 8000
+```
+
+Then open <http://localhost:8000>.
+
+Uploaded input files and generated reports are stored under `./data/` by default. Override the location with the `IPERF_DATA_DIR` environment variable.
+
+### Pages
+
+| Path | Purpose |
+| --- | --- |
+| `/` | New-run form (upload CSV/XLSX, fill SSH credentials, set overrides) |
+| `/run/{id}` | Live log view for an in-flight run |
+| `/run/{id}/stream` | SSE stream of stdout/stderr |
+| `/run/{id}/status` | JSON status (used by the run page to fetch reports) |
+| `/reports` | History of generated reports |
+| `/reports/{file}` | Download / view a report file |
+| `/healthz` | Liveness probe (returns `{"ok": true}`) |
+
+### Concurrency
+
+The web app accepts **one run at a time**. While a run is active, new submissions return HTTP 409. Within a run, the existing parallel model is preserved: hubs are set up in parallel, and each hub queue runs its spokes sequentially while different hubs run in parallel.
+
+### No Auth
+
+The web app does not authenticate. Bind it to a trusted network (`127.0.0.1` or an internal interface), or put it behind a reverse proxy that enforces auth. Note that SSH credentials are sent in the form body — terminate TLS at a reverse proxy if you expose it beyond localhost.
+
+## Docker
+
+A `Dockerfile` and `docker-compose.yml` are included.
+
+### Build and run
+
+```bash
+docker compose up --build
+```
+
+Then open <http://localhost:8000>. Uploads and reports persist on the host under `./data/`.
+
+### Network Reachability
+
+The container needs network access to your hub and spoke firewalls (SSH on TCP 22 and the traffictest port, default TCP 5201). If your firewalls are only reachable from the host network, uncomment the `network_mode: host` line in [`docker-compose.yml`](docker-compose.yml) (note: `network_mode: host` is Linux-only; on macOS/Windows you must use a routable bridge instead).
+
+### Standalone Docker (no compose)
+
+```bash
+docker build -t iperf-stress-test .
+docker run --rm -p 8000:8000 -v "$(pwd)/data:/data" iperf-stress-test
+```
+
+### Environment
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `IPERF_DATA_DIR` | Base directory for uploads and reports | `/data` (container) / `./data` (local) |

@@ -1,0 +1,15 @@
+.git
+.gitignore
+.idea
+.claude
+.venv
+__pycache__
+*.pyc
+*.pyo
+data
+Reports
+devices.csv
+*.html
+*.xlsx
+*.pdf
+README.md

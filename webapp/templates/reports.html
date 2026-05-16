@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Reports — FortiGate Traffic Test Runner{% endblock %}
+{% block content %}
+<section class="card">
+    <h1>Reports</h1>
+    {% if not reports %}
+    <p class="muted">No reports yet. <a href="/">Start a run</a>.</p>
+    {% else %}
+    <table class="reports">
+        <thead>
+            <tr><th>Name</th><th>Modified</th><th>Files</th></tr>
+        </thead>
+        <tbody>
+            {% for r in reports %}
+            <tr>
+                <td><code>{{ r.name }}</code></td>
+                <td>{{ r.modified }}</td>
+                <td>
+                    {% for f in r.files %}
+                        <a href="{{ f.url }}"{% if f.ext == 'html' %} target="_blank"{% endif %}>{{ f.ext.upper() }}</a>
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+{% endblock %}

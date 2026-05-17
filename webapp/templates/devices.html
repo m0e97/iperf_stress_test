@@ -2,21 +2,37 @@
 {% block title %}Devices — FortiGate Traffic Test Runner{% endblock %}
 {% block content %}
 <section class="card">
-    <h1>Devices</h1>
+    <div class="page-toolbar">
+        <div>
+            <h1>Devices</h1>
+            <p class="muted" style="margin:0;">Persistent catalog of test targets. Pick devices to run or schedule.</p>
+        </div>
+        <div class="toolbar-actions">
+            <button type="button" class="secondary" onclick="document.getElementById('add-modal').showModal();">+ Add Device</button>
+            <button type="button" class="secondary" onclick="document.getElementById('import-modal').showModal();">Import CSV / XLSX</button>
+        </div>
+    </div>
+
     {% if message %}<div class="banner ok">{{ message }}</div>{% endif %}
     {% if error %}<div class="banner err">{{ error }}</div>{% endif %}
-    {% if active_job_id %}
-    <div class="banner warn">
-        A run is already in progress: <a href="/run/{{ active_job_id }}">job {{ active_job_id }}</a>.
-    </div>
-    {% endif %}
 
-    {% if devices %}
-    <form action="/devices/run" method="post">
+    {% if not devices %}
+    <div class="empty-state">
+        <div class="empty-icon">◇</div>
+        <h3>No devices yet</h3>
+        <p>Add a device manually or bulk-import from a CSV/XLSX file.</p>
+        <div class="actions">
+            <button type="button" onclick="document.getElementById('add-modal').showModal();">Add your first device</button>
+            <button type="button" class="secondary" onclick="document.getElementById('import-modal').showModal();">Import from file</button>
+        </div>
+    </div>
+    {% else %}
+    <form action="/devices/run" method="post" id="devices-form">
+        <div class="table-wrap">
         <table class="reports">
             <thead>
                 <tr>
-                    <th><input type="checkbox" id="select-all"></th>
+                    <th style="width:32px;"><input type="checkbox" id="select-all" aria-label="Select all"></th>
                     <th>Name</th>
                     <th>Spoke IP</th>
                     <th>Hub IP</th>
@@ -33,7 +49,7 @@
             <tbody>
                 {% for d in devices %}
                 <tr>
-                    <td><input type="checkbox" name="device_ids" value="{{ d.id }}"></td>
+                    <td><input type="checkbox" name="device_ids" value="{{ d.id }}" class="row-check" aria-label="Select {{ d.spoke_ip }}"></td>
                     <td>{{ d.name or "—" }}</td>
                     <td><code>{{ d.spoke_ip }}</code></td>
                     <td><code>{{ d.hub_ip }}</code></td>
@@ -44,7 +60,7 @@
                     <td>{{ d.traffictest_port or "—" }}</td>
                     <td>{{ d.last_run or "—" }}</td>
                     <td>{{ d.run_count }}</td>
-                    <td>
+                    <td style="white-space:nowrap;">
                         <a href="/devices/{{ d.id }}/edit">edit</a>
                         <a href="/archive/device/{{ d.id }}">history</a>
                     </td>
@@ -52,69 +68,113 @@
                 {% endfor %}
             </tbody>
         </table>
+        </div>
 
-        <h2>Run test on selected devices</h2>
-        <fieldset>
-            <legend>SSH Credentials</legend>
-            <label>SSH username <input type="text" name="sshuser" autocomplete="username" required></label>
-            <label>SSH password <input type="password" name="sshpw" autocomplete="current-password" required></label>
-        </fieldset>
-        <fieldset>
-            <legend>Overrides (optional)</legend>
-            <div class="grid">
-                <label>Hub IP (applies to all) <input type="text" name="hub_ip"></label>
-                <label>Hub management IP <input type="text" name="hub_mgmt_ip"></label>
-                <label>Hub server interface <input type="text" name="hub_server_intf" placeholder="{{ defaults.hub_server_intf }}"></label>
-                <label>Spoke client interface <input type="text" name="spoke_client_intf" placeholder="{{ defaults.spoke_client_intf }}"></label>
-                <label>Traffictest port <input type="text" name="traffictest_port" placeholder="{{ defaults.traffictest_port }}"></label>
-                <label>Traffictest duration (s) <input type="number" name="traffictest_duration" value="{{ defaults.traffictest_duration }}" min="1"></label>
-                <label>Hub server start delay (s) <input type="number" step="0.1" name="hub_server_start_delay" value="{{ defaults.hub_server_start_delay }}" min="0"></label>
-                <label>Delay between spokes (s) <input type="number" name="delay_seconds" value="0" min="0"></label>
-                <label>Per-command timeout (s, 0 = none) <input type="number" name="timeout" value="0" min="0"></label>
+        <div class="selection-bar" id="selection-bar">
+            <span class="count"><strong id="selection-count">0</strong> device(s) selected</span>
+            <button type="button" onclick="document.getElementById('run-modal').showModal();">Run on selected →</button>
+        </div>
+
+        <!-- Run-on-selected modal: hidden run config that posts to /devices/run -->
+        <dialog class="modal" id="run-modal">
+            <div class="modal-header">
+                <h2>Run on selected devices</h2>
+                <button type="button" class="modal-close" onclick="document.getElementById('run-modal').close();" aria-label="Close">×</button>
             </div>
-        </fieldset>
-        <fieldset>
-            <legend>Mode</legend>
-            <label class="inline"><input type="checkbox" name="skip_hub_setup" value="true"> Skip hub setup</label>
-            <label class="inline"><input type="checkbox" name="dry_run" value="true"> Dry run</label>
-        </fieldset>
-        <button type="submit">Start Run on Selected</button>
+            <div class="modal-body">
+                <fieldset>
+                    <legend>SSH Credentials</legend>
+                    <label>SSH username <input type="text" name="sshuser" autocomplete="username" required></label>
+                    <label>SSH password <input type="password" name="sshpw" autocomplete="current-password" required></label>
+                </fieldset>
+                <fieldset>
+                    <legend>Overrides (optional)</legend>
+                    <div class="grid">
+                        <label>Hub IP <input type="text" name="hub_ip"></label>
+                        <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip"></label>
+                        <label>Hub server intf <input type="text" name="hub_server_intf" placeholder="{{ defaults.hub_server_intf }}"></label>
+                        <label>Spoke client intf <input type="text" name="spoke_client_intf" placeholder="{{ defaults.spoke_client_intf }}"></label>
+                        <label>Traffictest port <input type="text" name="traffictest_port" placeholder="{{ defaults.traffictest_port }}"></label>
+                        <label>Duration (s) <input type="number" name="traffictest_duration" value="{{ defaults.traffictest_duration }}" min="1"></label>
+                        <label>Hub start delay (s) <input type="number" step="0.1" name="hub_server_start_delay" value="{{ defaults.hub_server_start_delay }}" min="0"></label>
+                        <label>Delay between spokes (s) <input type="number" name="delay_seconds" value="0" min="0"></label>
+                        <label>Per-command timeout (s) <input type="number" name="timeout" value="0" min="0"></label>
+                    </div>
+                    <label class="inline"><input type="checkbox" name="skip_hub_setup" value="true"> Skip hub setup</label>
+                    <label class="inline"><input type="checkbox" name="dry_run" value="true"> Dry run</label>
+                </fieldset>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="secondary" onclick="document.getElementById('run-modal').close();">Cancel</button>
+                <button type="submit">Start Run</button>
+            </div>
+        </dialog>
     </form>
-    {% else %}
-    <p class="muted">No devices yet. Add one below or import from CSV/XLSX.</p>
     {% endif %}
 </section>
 
-<section class="card">
-    <h2>Add a device</h2>
+<!-- Add-device modal -->
+<dialog class="modal" id="add-modal">
     <form action="/devices/new" method="post">
-        <div class="grid">
-            <label>Name <input type="text" name="name"></label>
-            <label>Spoke IP <input type="text" name="spoke_ip" required></label>
-            <label>Hub IP <input type="text" name="hub_ip" required></label>
-            <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip"></label>
-            <label>Speed <input type="text" name="speed" placeholder="100M"></label>
-            <label>Server intf <input type="text" name="server_intf"></label>
-            <label>Client intf <input type="text" name="client_intf"></label>
-            <label>Traffictest port <input type="text" name="traffictest_port"></label>
+        <div class="modal-header">
+            <h2>Add device</h2>
+            <button type="button" class="modal-close" onclick="document.getElementById('add-modal').close();" aria-label="Close">×</button>
         </div>
-        <label>Notes <input type="text" name="notes"></label>
-        <button type="submit">Add Device</button>
+        <div class="modal-body">
+            <div class="grid">
+                <label>Name <input type="text" name="name"></label>
+                <label>Spoke IP <input type="text" name="spoke_ip" required></label>
+                <label>Hub IP <input type="text" name="hub_ip" required></label>
+                <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip"></label>
+                <label>Speed <input type="text" name="speed" placeholder="100M"></label>
+                <label>Server intf <input type="text" name="server_intf"></label>
+                <label>Client intf <input type="text" name="client_intf"></label>
+                <label>Traffictest port <input type="text" name="traffictest_port"></label>
+            </div>
+            <label>Notes <input type="text" name="notes"></label>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="secondary" onclick="document.getElementById('add-modal').close();">Cancel</button>
+            <button type="submit">Add Device</button>
+        </div>
     </form>
-</section>
+</dialog>
 
-<section class="card">
-    <h2>Import from CSV / XLSX</h2>
-    <p class="muted">Same column names as the CLI input file. Existing devices (matched by spoke_ip+hub_ip) are updated.</p>
+<!-- Import modal -->
+<dialog class="modal" id="import-modal">
     <form action="/devices/import" method="post" enctype="multipart/form-data">
-        <label>File <input type="file" name="input_file" accept=".csv,.xlsx" required></label>
-        <button type="submit">Import</button>
+        <div class="modal-header">
+            <h2>Import from CSV / XLSX</h2>
+            <button type="button" class="modal-close" onclick="document.getElementById('import-modal').close();" aria-label="Close">×</button>
+        </div>
+        <div class="modal-body">
+            <p class="muted">Same column names as the CLI input file. Existing devices (matched by spoke_ip + hub_ip) are updated in place.</p>
+            <label>File <input type="file" name="input_file" accept=".csv,.xlsx" required></label>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="secondary" onclick="document.getElementById('import-modal').close();">Cancel</button>
+            <button type="submit">Import</button>
+        </div>
     </form>
-</section>
+</dialog>
 
 <script>
-document.getElementById("select-all")?.addEventListener("change", function (e) {
-    document.querySelectorAll('input[name="device_ids"]').forEach(cb => cb.checked = e.target.checked);
-});
+(function () {
+    const all = document.getElementById("select-all");
+    const rows = () => document.querySelectorAll("input.row-check");
+    const bar = document.getElementById("selection-bar");
+    const count = document.getElementById("selection-count");
+    function refresh() {
+        const checked = document.querySelectorAll("input.row-check:checked");
+        if (count) count.textContent = String(checked.length);
+        if (bar) bar.classList.toggle("visible", checked.length > 0);
+    }
+    if (all) all.addEventListener("change", e => {
+        rows().forEach(cb => cb.checked = e.target.checked);
+        refresh();
+    });
+    rows().forEach(cb => cb.addEventListener("change", refresh));
+    refresh();
+})();
 </script>
 {% endblock %}

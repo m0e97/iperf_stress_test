@@ -5,8 +5,16 @@
     <h1>Archive</h1>
     <p class="muted">Browse historic test results by device. Each run is stored as raw data on the FTP archive and rendered on demand to HTML, Excel, or PDF.</p>
     {% if not devices %}
-    <p>No devices yet. <a href="/devices">Add some</a>.</p>
+    <div class="empty-state">
+        <div class="empty-icon">▤</div>
+        <h3>Nothing archived yet</h3>
+        <p>Add devices and run a test to start building history.</p>
+        <div class="actions">
+            <a class="button" href="/devices">Go to Devices</a>
+        </div>
+    </div>
     {% else %}
+    <div class="table-wrap">
     <table class="reports">
         <thead>
             <tr><th>Spoke IP</th><th>Hub IP</th><th>Name</th><th>Last run</th><th>Total runs</th><th></th></tr>
@@ -24,6 +32,7 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
     {% endif %}
 </section>
 {% endblock %}

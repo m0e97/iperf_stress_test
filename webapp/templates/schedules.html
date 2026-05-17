@@ -19,8 +19,16 @@
     {% endif %}
 
     {% if not schedules %}
-    <p class="muted" style="margin-top:14px;">No schedules yet. <a href="/schedules/new">Create one</a>.</p>
+    <div class="empty-state">
+        <div class="empty-icon">⏱</div>
+        <h3>No schedules yet</h3>
+        <p>Schedule a one-shot or recurring test against your saved devices.</p>
+        <div class="actions">
+            <a class="button" href="/schedules/new">Create your first schedule</a>
+        </div>
+    </div>
     {% else %}
+    <div class="table-wrap">
     <table class="reports" style="margin-top:14px;">
         <thead>
             <tr>
@@ -64,6 +72,7 @@
         {% endfor %}
         </tbody>
     </table>
+    </div>
     {% endif %}
 </section>
 {% endblock %}

@@ -78,8 +78,9 @@
     {% endif %}
 
     {% if not runs %}
-    <p>No runs recorded for this device yet.</p>
+    <p class="muted">No runs recorded for this device yet.</p>
     {% else %}
+    <div class="table-wrap">
     <table class="reports">
         <thead>
             <tr><th>Run ID</th><th>Started</th><th>Finished</th><th>Status</th><th>Site result</th><th>Throughput</th><th>Download</th></tr>
@@ -110,6 +111,7 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
     {% endif %}
 </section>
 {% endblock %}

@@ -6,7 +6,6 @@
     <title>{% block title %}FortiGate Traffic Test Runner{% endblock %}</title>
     <link rel="stylesheet" href="/static/styles.css">
     <script>
-        // Apply persisted theme before paint to avoid flash.
         (function () {
             try {
                 const t = localStorage.getItem("theme") || "dark";
@@ -24,7 +23,7 @@
     </a>
     <nav class="side-nav">
         <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>
-            <span class="nav-icon">↗</span> New Run
+            <span class="nav-icon">↗</span> Quick Run
         </a>
         <a href="/devices" {% if path.startswith('/devices') %}aria-current="page"{% endif %}>
             <span class="nav-icon">◇</span> Devices
@@ -37,9 +36,15 @@
         </a>
     </nav>
     <div class="sidebar-footer">
+        {% if active_job_id %}
+        <a class="sidebar-status" href="/run/{{ active_job_id }}">
+            <span class="status-dot"></span>
+            <span>Run in progress · <code style="background:transparent;padding:0;color:inherit;">{{ active_job_id }}</code></span>
+        </a>
+        {% endif %}
         <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle theme">
-            <span class="theme-toggle-icon"></span>
-            <span class="theme-toggle-label"></span>
+            <span data-theme-option="light">☀ Light</span>
+            <span data-theme-option="dark">☾ Dark</span>
         </button>
     </div>
 </aside>
@@ -51,13 +56,11 @@
 <script>
 (function () {
     const btn = document.getElementById("theme-toggle");
-    const icon = btn.querySelector(".theme-toggle-icon");
-    const label = btn.querySelector(".theme-toggle-label");
-    const apply = (t) => {
+    const opts = btn.querySelectorAll("[data-theme-option]");
+    function apply(t) {
         document.documentElement.setAttribute("data-theme", t);
-        icon.textContent = t === "light" ? "☾" : "☀";
-        label.textContent = t === "light" ? "Dark mode" : "Light mode";
-    };
+        opts.forEach(o => o.classList.toggle("active", o.dataset.themeOption === t));
+    }
     apply(document.documentElement.getAttribute("data-theme") || "dark");
     btn.addEventListener("click", () => {
         const cur = document.documentElement.getAttribute("data-theme") || "dark";

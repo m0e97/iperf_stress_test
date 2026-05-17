@@ -1,7 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="card">
-    <h1>Start a Test Run</h1>
+    <div class="page-toolbar">
+        <div>
+            <h1>Quick Run from CSV / XLSX</h1>
+            <p class="muted" style="margin:0;">One-off run using an ad-hoc file. For repeated tests, save targets in <a href="/devices">Devices</a> instead.</p>
+        </div>
+    </div>
     {% if active_job_id %}
     <div class="banner warn">
         A run is already in progress: <a href="/run/{{ active_job_id }}">job {{ active_job_id }}</a>.

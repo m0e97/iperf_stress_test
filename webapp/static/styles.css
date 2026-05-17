@@ -135,23 +135,52 @@ body {
 }
 .nav-icon { width: 16px; text-align: center; opacity: 0.85; }
 
-.sidebar-footer { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); }
-.theme-toggle {
+.sidebar-footer { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+
+.sidebar-status {
     display: flex;
     align-items: center;
     gap: 10px;
-    width: 100%;
     padding: 9px 12px;
-    background: transparent;
-    color: var(--muted);
-    border: 1px solid transparent;
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
     border-radius: 6px;
+    color: var(--accent);
+    font-size: 0.82em;
+    text-decoration: none;
+}
+.sidebar-status .status-dot {
+    width: 8px; height: 8px; border-radius: 999px; background: var(--accent);
+    box-shadow: 0 0 0 0 var(--accent);
+    animation: pulse 1.6s infinite;
+}
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
+    70% { box-shadow: 0 0 0 8px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.theme-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
     cursor: pointer;
-    font-size: 0.9em;
     font-family: inherit;
 }
-.theme-toggle:hover { background: var(--panel-2); color: var(--text); border-color: var(--border); }
-.theme-toggle-icon { font-size: 1em; }
+.theme-toggle span {
+    flex: 1;
+    text-align: center;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 0.82em;
+    color: var(--muted);
+    transition: background 0.15s, color 0.15s;
+}
+.theme-toggle span.active { background: var(--accent); color: white; font-weight: 500; }
 
 /* --- Main area --------------------------------------------------------- */
 
@@ -331,6 +360,115 @@ table.reports th {
 table.reports tbody tr:hover { background: var(--panel-2); }
 table.reports td a { color: var(--accent); margin-right: 12px; text-decoration: none; font-weight: 500; }
 table.reports td a:hover { text-decoration: underline; }
+
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-wrap table.reports { min-width: 720px; }
+
+/* --- Toolbars + empty states ----------------------------------------- */
+
+.page-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+.page-toolbar .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.empty-state {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--muted);
+}
+.empty-state .empty-icon {
+    width: 56px; height: 56px;
+    margin: 0 auto 14px;
+    border-radius: 14px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    display: grid; place-items: center;
+    font-size: 1.6em;
+}
+.empty-state h3 { color: var(--text-strong); margin: 0 0 6px; font-size: 1.05em; font-weight: 600; }
+.empty-state p { margin: 0 0 18px; }
+.empty-state .actions { display: inline-flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+/* --- Modals (native <dialog>) ---------------------------------------- */
+
+dialog.modal {
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    color: var(--text);
+    max-width: 640px;
+    width: calc(100% - 32px);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+dialog.modal::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px); }
+dialog.modal .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+}
+dialog.modal .modal-header h2 { margin: 0; font-size: 1.05em; }
+dialog.modal .modal-close {
+    background: transparent;
+    color: var(--muted);
+    padding: 4px 10px;
+    font-size: 1.3em;
+    line-height: 1;
+}
+dialog.modal .modal-close:hover { background: var(--panel-2); color: var(--text); }
+dialog.modal .modal-body { padding: 20px; }
+dialog.modal .modal-footer {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 14px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--panel-2);
+    border-bottom-left-radius: 12px;
+    border-bottom-right-radius: 12px;
+}
+
+/* --- Selection floating bar ----------------------------------------- */
+
+.selection-bar {
+    position: sticky;
+    bottom: 16px;
+    margin-top: 18px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 8px 8px 8px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(8px);
+    transition: opacity 0.18s, transform 0.18s;
+    z-index: 10;
+}
+.selection-bar.visible { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.selection-bar .count { font-size: 0.92em; color: var(--text); }
+
+/* --- Breadcrumb ----------------------------------------------------- */
+
+.crumb {
+    font-size: 0.85em;
+    color: var(--muted);
+    margin: 0 0 6px;
+}
+.crumb a { color: var(--muted); text-decoration: none; }
+.crumb a:hover { color: var(--text); text-decoration: underline; }
+.crumb .sep { margin: 0 6px; opacity: 0.5; }
+
+/* --- Form field errors ---------------------------------------------- */
+
+input.invalid, select.invalid, textarea.invalid { border-color: var(--err); }
 
 /* --- Chart card -------------------------------------------------------- */
 

@@ -401,7 +401,20 @@ def view_run(request: Request, job_id: str):
     job = JOBS.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found.")
-    return templates.TemplateResponse("run.html", {"request": request, "job": job})
+    devices_for_run = []
+    for did in job.device_ids:
+        d = db.get_device(did)
+        if d:
+            devices_for_run.append(d)
+    return templates.TemplateResponse(
+        "run.html",
+        {
+            "request": request,
+            "job": job,
+            "active_job_id": _active_job_id(),
+            "devices_for_run": devices_for_run,
+        },
+    )
 
 
 @app.get("/run/{job_id}/status")
@@ -941,13 +954,89 @@ def schedule_new_form(request: Request, error: str = ""):
     )
 
 
+def _schedule_form_ctx(request: Request, schedule: dict | None, form: dict[str, Any] | None = None, error: str = "") -> dict[str, Any]:
+    """Build the template ctx for the schedule edit form, optionally pre-filled from a failed POST."""
+    devices = db.list_devices()
+    selected_ids: list[int] = []
+    selected_days: list[int] = []
+    overrides: dict[str, Any] = {}
+    placeholder = None  # shape that matches `schedule` in template
+
+    if form is not None:
+        # Hydrate from POSTed values so the user doesn't lose input on error.
+        raw_devices = form.get("device_ids") or []
+        if isinstance(raw_devices, str):
+            raw_devices = [raw_devices]
+        selected_ids = [int(x) for x in raw_devices if str(x).strip().isdigit()]
+        raw_days = form.get("days") or []
+        if isinstance(raw_days, str):
+            raw_days = [raw_days]
+        selected_days = [int(x) for x in raw_days if str(x).strip().isdigit()]
+        overrides = {
+            "hub_ip": form.get("hub_ip") or "",
+            "hub_mgmt_ip": form.get("hub_mgmt_ip") or "",
+            "hub_server_intf": form.get("hub_server_intf") or "",
+            "spoke_client_intf": form.get("spoke_client_intf") or "",
+            "traffictest_port": form.get("traffictest_port") or "",
+            "traffictest_duration": form.get("traffictest_duration") or engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS,
+            "hub_server_start_delay": form.get("hub_server_start_delay") or engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS,
+            "delay_seconds": form.get("delay_seconds") or 0,
+            "timeout": form.get("timeout") or 0,
+            "skip_hub_setup": bool(form.get("skip_hub_setup")),
+            "dry_run": bool(form.get("dry_run")),
+        }
+        run_time = form.get("run_at") if (form.get("pattern") == "once") else form.get("time_of_day")
+        placeholder = {
+            "id": schedule["id"] if schedule else 0,
+            "name": form.get("name") or "",
+            "pattern": form.get("pattern") or "daily",
+            "run_time": run_time or "",
+            "sshuser": form.get("sshuser") or "",
+            "sshpw": form.get("sshpw") or "",
+            "enabled": True,
+            "day_of_month": int(form.get("day_of_month")) if str(form.get("day_of_month") or "").isdigit() else None,
+            "month_of_year": int(form.get("month_of_year")) if str(form.get("month_of_year") or "").isdigit() else None,
+        }
+    elif schedule is not None:
+        try:
+            selected_ids = [int(x) for x in json.loads(schedule["device_ids"])]
+        except Exception:  # noqa: BLE001
+            selected_ids = []
+        selected_days = [int(d) for d in (schedule["days_of_week"] or "").split(",") if d.strip()]
+        overrides = json.loads(schedule["overrides_json"] or "{}")
+
+    return {
+        "request": request,
+        "devices": devices,
+        "schedule": placeholder or schedule,
+        "selected_device_ids": selected_ids,
+        "days_list": _DAYS,
+        "selected_days": selected_days,
+        "months_list": _MONTHS,
+        "overrides": overrides,
+        "error": error,
+        "active_job_id": _active_job_id(),
+        "defaults": {
+            "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
+            "spoke_client_intf": engine.DEFAULT_SPOKE_CLIENT_INTF,
+            "traffictest_port": engine.DEFAULT_TRAFFICTEST_PORT,
+            "traffictest_duration": engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS,
+            "hub_server_start_delay": engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS,
+        },
+    }
+
+
 @app.post("/schedules/new")
 async def schedule_create(request: Request):
     form_data = await request.form()
     form = {k: form_data.getlist(k) if k in {"device_ids", "days"} else form_data.get(k) for k in form_data.keys()}
     values, err = _parse_schedule_form(form)
     if err:
-        return RedirectResponse(url=f"/schedules?error={err}", status_code=303)
+        return templates.TemplateResponse(
+            "schedule_edit.html",
+            _schedule_form_ctx(request, schedule=None, form=form, error=err),
+            status_code=400,
+        )
     db.create_schedule(values)
     return RedirectResponse(url="/schedules?message=Schedule+created", status_code=303)
 
@@ -989,7 +1078,12 @@ async def schedule_update(schedule_id: int, request: Request):
     form = {k: form_data.getlist(k) if k in {"device_ids", "days"} else form_data.get(k) for k in form_data.keys()}
     values, err = _parse_schedule_form(form)
     if err:
-        return RedirectResponse(url=f"/schedules?error={err}", status_code=303)
+        existing = db.get_schedule(schedule_id)
+        return templates.TemplateResponse(
+            "schedule_edit.html",
+            _schedule_form_ctx(request, schedule=existing, form=form, error=err),
+            status_code=400,
+        )
     db.update_schedule(schedule_id, values)
     return RedirectResponse(url="/schedules?message=Schedule+updated", status_code=303)
 

@@ -42,12 +42,13 @@
             <span>Run in progress · <code style="background:transparent;padding:0;color:inherit;">{{ active_job_id }}</code></span>
         </a>
         {% endif %}
-        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle theme">
-            <span data-theme-option="light">☀ Light</span>
-            <span data-theme-option="dark">☾ Dark</span>
-        </button>
     </div>
 </aside>
+
+<button id="theme-toggle" class="theme-toggle theme-toggle-floating" type="button" aria-label="Toggle theme">
+    <span data-theme-option="light">☀ Light</span>
+    <span data-theme-option="dark">☾ Dark</span>
+</button>
 
 <main class="main-area">
     {% block content %}{% endblock %}

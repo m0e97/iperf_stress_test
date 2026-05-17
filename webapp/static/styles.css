@@ -161,26 +161,33 @@ body {
 }
 
 .theme-toggle {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 4px;
     padding: 4px;
-    background: var(--panel-2);
+    background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 999px;
     cursor: pointer;
     font-family: inherit;
+    box-shadow: var(--shadow);
 }
 .theme-toggle span {
-    flex: 1;
     text-align: center;
-    padding: 6px 10px;
+    padding: 6px 14px;
     border-radius: 999px;
     font-size: 0.82em;
     color: var(--muted);
     transition: background 0.15s, color 0.15s;
 }
 .theme-toggle span.active { background: var(--accent); color: white; font-weight: 500; }
+
+.theme-toggle-floating {
+    position: fixed;
+    top: 20px;
+    right: 24px;
+    z-index: 20;
+}
 
 /* --- Main area --------------------------------------------------------- */
 
@@ -503,7 +510,7 @@ input.invalid, select.invalid, textarea.invalid { border-color: var(--err); }
     .brand { margin-bottom: 0; }
     .side-nav { flex-direction: row; flex: 1; }
     .sidebar-footer { border-top: none; padding-top: 0; margin-top: 0; }
-    .theme-toggle { padding: 7px 10px; }
-    .theme-toggle-label { display: none; }
     .main-area { padding: 18px; }
+    .theme-toggle-floating { top: 12px; right: 12px; }
+    .theme-toggle-floating span { padding: 5px 10px; font-size: 0.78em; }
 }

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Edit device — FortiGate Traffic Test Runner{% endblock %}
+{% block content %}
+<section class="card">
+    <h1>Edit device <code>{{ device.spoke_ip }}</code></h1>
+    <form action="/devices/{{ device.id }}/edit" method="post">
+        <div class="grid">
+            <label>Name <input type="text" name="name" value="{{ device.name or '' }}"></label>
+            <label>Spoke IP <input type="text" name="spoke_ip" value="{{ device.spoke_ip }}" required></label>
+            <label>Hub IP <input type="text" name="hub_ip" value="{{ device.hub_ip }}" required></label>
+            <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip" value="{{ device.hub_mgmt_ip or '' }}"></label>
+            <label>Speed <input type="text" name="speed" value="{{ device.speed or '' }}"></label>
+            <label>Server intf <input type="text" name="server_intf" value="{{ device.server_intf or '' }}"></label>
+            <label>Client intf <input type="text" name="client_intf" value="{{ device.client_intf or '' }}"></label>
+            <label>Traffictest port <input type="text" name="traffictest_port" value="{{ device.traffictest_port or '' }}"></label>
+        </div>
+        <label>Notes <input type="text" name="notes" value="{{ device.notes or '' }}"></label>
+        <button type="submit">Save</button>
+        <a href="/devices" style="margin-left:12px;color:var(--muted)">Cancel</a>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Delete</h2>
+    <form action="/devices/{{ device.id }}/delete" method="post"
+          onsubmit="return confirm('Delete device {{ device.spoke_ip }}? Its run history will be unlinked.');">
+        <button type="submit" style="background: var(--err)">Delete device</button>
+    </form>
+</section>
+{% endblock %}

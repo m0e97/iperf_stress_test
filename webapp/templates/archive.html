@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Archive — FortiGate Traffic Test Runner{% endblock %}
+{% block content %}
+<section class="card">
+    <h1>Archive</h1>
+    <p class="muted">Browse historic test results by device. Each run is stored as raw data on the FTP archive and rendered on demand to HTML, Excel, or PDF.</p>
+    {% if not devices %}
+    <p>No devices yet. <a href="/devices">Add some</a>.</p>
+    {% else %}
+    <table class="reports">
+        <thead>
+            <tr><th>Spoke IP</th><th>Hub IP</th><th>Name</th><th>Last run</th><th>Total runs</th><th></th></tr>
+        </thead>
+        <tbody>
+            {% for d in devices %}
+            <tr>
+                <td><code>{{ d.spoke_ip }}</code></td>
+                <td><code>{{ d.hub_ip }}</code></td>
+                <td>{{ d.name or "—" }}</td>
+                <td>{{ d.last_run or "—" }}</td>
+                <td>{{ d.run_count }}</td>
+                <td>{% if d.run_count %}<a href="/archive/device/{{ d.id }}">view history</a>{% endif %}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+{% endblock %}

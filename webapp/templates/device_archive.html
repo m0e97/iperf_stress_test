@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}{{ device.spoke_ip }} history — FortiGate Traffic Test Runner{% endblock %}
+{% block content %}
+<section class="card">
+    <h1>History — <code>{{ device.spoke_ip }}</code> → <code>{{ device.hub_ip }}</code></h1>
+    <p class="muted">
+        {{ device.name or "(unnamed)" }} · speed {{ device.speed or "—" }} · server {{ device.server_intf or "—" }} · client {{ device.client_intf or "—" }}
+        · <a href="/devices/{{ device.id }}/edit">edit device</a>
+    </p>
+    {% if not runs %}
+    <p>No runs recorded for this device yet.</p>
+    {% else %}
+    <table class="reports">
+        <thead>
+            <tr><th>Run ID</th><th>Started</th><th>Finished</th><th>Status</th><th>Site result</th><th>Download</th></tr>
+        </thead>
+        <tbody>
+            {% for r in runs %}
+            <tr>
+                <td><code>{{ r.id }}</code></td>
+                <td>{{ r.started_at }}</td>
+                <td>{{ r.finished_at or "—" }}</td>
+                <td>
+                    <span class="badge {% if r.status == 'done' and r.exit_code == 0 %}ok{% elif r.status == 'error' %}err{% endif %}">
+                        {{ r.status }}{% if r.exit_code is not none %} ({{ r.exit_code }}){% endif %}
+                    </span>
+                </td>
+                <td>{{ r.site_status or "—" }}</td>
+                <td>
+                    {% if r.archive_filename %}
+                    <a href="/archive/run/{{ r.id }}/render/html" target="_blank">HTML</a>
+                    <a href="/archive/run/{{ r.id }}/render/xlsx">XLSX</a>
+                    <a href="/archive/run/{{ r.id }}/render/pdf">PDF</a>
+                    {% else %}
+                    <span class="muted">no archive</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+{% endblock %}

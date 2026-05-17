@@ -387,13 +387,25 @@ Uploaded input files and generated reports are stored under `./data/` by default
 
 | Path | Purpose |
 | --- | --- |
-| `/` | New-run form (upload CSV/XLSX, fill SSH credentials, set overrides) |
+| `/` | Ad-hoc CSV / XLSX upload + run form |
+| `/devices` | Persistent device list (CRUD + CSV import + "run on selected") |
+| `/devices/{id}/edit` | Edit one device |
+| `/archive` | Browse historic results, device-centric |
+| `/archive/device/{id}` | All runs that included this device |
+| `/archive/run/{id}/render/{fmt}` | Render archived run as `html` / `xlsx` / `pdf` on demand |
 | `/run/{id}` | Live log view for an in-flight run |
 | `/run/{id}/stream` | SSE stream of stdout/stderr |
-| `/run/{id}/status` | JSON status (used by the run page to fetch reports) |
-| `/reports` | History of generated reports |
-| `/reports/{file}` | Download / view a report file |
-| `/healthz` | Liveness probe (returns `{"ok": true}`) |
+| `/run/{id}/status` | JSON status (used by the run page) |
+| `/healthz` | Liveness probe — also reports FTP reachability |
+
+### Persistence
+
+The web app uses two stores, both behind a single `/data` volume:
+
+- **SQLite (`/data/app.db`)** — keeps the devices catalog and a lightweight index of every run (id, status, summary, which devices it covered, FTP archive filename).
+- **FTP archive (separate container)** — stores the raw run results as JSON (one file per run). Reports are **not** pre-rendered; the web app fetches the JSON on demand and runs the HTML / XLSX / PDF builders when you click a format button. This means re-rendering with updated report templates "just works" for past runs.
+
+The FTP server is on an internal docker network only and uses fixed credentials (`archive` / `archive`); change them in [`docker-compose.yml`](docker-compose.yml) if needed.
 
 ### Concurrency
 

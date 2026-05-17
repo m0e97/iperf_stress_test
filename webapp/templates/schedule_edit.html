@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}{% if schedule %}Edit{% else %}New{% endif %} Schedule — FortiGate Traffic Test Runner{% endblock %}
+{% block content %}
+<section class="card">
+    <h1>{% if schedule %}Edit schedule{% else %}New schedule{% endif %}</h1>
+    {% if error %}<div class="banner err">{{ error }}</div>{% endif %}
+    <div class="banner warn">
+        SSH credentials are stored in plaintext in the SQLite database on the mounted <code>/data</code> volume. Protect it at the filesystem level.
+    </div>
+
+    <form action="{% if schedule %}/schedules/{{ schedule.id }}/edit{% else %}/schedules/new{% endif %}" method="post" id="schedule-form">
+        <fieldset>
+            <legend>Basics</legend>
+            <label>Name <input type="text" name="name" required value="{{ schedule.name if schedule else '' }}"></label>
+            <label class="inline">
+                <input type="checkbox" name="enabled" value="1" {% if not schedule or schedule.enabled %}checked{% endif %}> Enabled
+            </label>
+        </fieldset>
+
+        <fieldset>
+            <legend>Schedule</legend>
+            <label>Pattern
+                <select name="pattern" id="pattern-select" required>
+                    <option value="once" {% if schedule and schedule.pattern == 'once' %}selected{% endif %}>Once (specific date and time)</option>
+                    <option value="daily" {% if schedule and schedule.pattern == 'daily' %}selected{% endif %}>Daily</option>
+                    <option value="weekly" {% if schedule and schedule.pattern == 'weekly' %}selected{% endif %}>Weekly</option>
+                </select>
+            </label>
+
+            <div data-pattern="once" hidden>
+                <label>Date and time
+                    <input type="datetime-local" name="run_at"
+                           value="{{ schedule.run_time if schedule and schedule.pattern == 'once' else '' }}">
+                </label>
+            </div>
+            <div data-pattern="daily weekly" hidden>
+                <label>Time of day (24h, HH:MM)
+                    <input type="time" name="time_of_day"
+                           value="{{ schedule.run_time if schedule and schedule.pattern in ('daily','weekly') else '' }}">
+                </label>
+            </div>
+            <div data-pattern="weekly" hidden>
+                <label>Days of week</label>
+                <div style="display:flex;gap:14px;flex-wrap:wrap;">
+                    {% for n, lbl in days_list %}
+                    <label class="inline">
+                        <input type="checkbox" name="days" value="{{ n }}" {% if n in selected_days %}checked{% endif %}> {{ lbl }}
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>Devices</legend>
+            {% if not devices %}
+            <p class="muted">No devices configured. <a href="/devices">Add some first</a>.</p>
+            {% else %}
+            <div class="grid">
+                {% for d in devices %}
+                <label class="inline">
+                    <input type="checkbox" name="device_ids" value="{{ d.id }}" {% if d.id in selected_device_ids %}checked{% endif %}>
+                    <code>{{ d.spoke_ip }}</code> → <code>{{ d.hub_ip }}</code>
+                    {% if d.name %}<span class="muted">· {{ d.name }}</span>{% endif %}
+                </label>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </fieldset>
+
+        <fieldset>
+            <legend>SSH Credentials</legend>
+            <label>SSH username <input type="text" name="sshuser" autocomplete="username" required value="{{ schedule.sshuser if schedule else '' }}"></label>
+            <label>SSH password <input type="password" name="sshpw" autocomplete="current-password" required value="{{ schedule.sshpw if schedule else '' }}"></label>
+        </fieldset>
+
+        <fieldset>
+            <legend>Overrides (optional)</legend>
+            <div class="grid">
+                <label>Hub IP <input type="text" name="hub_ip" value="{{ overrides.hub_ip if overrides else '' }}"></label>
+                <label>Hub management IP <input type="text" name="hub_mgmt_ip" value="{{ overrides.hub_mgmt_ip if overrides else '' }}"></label>
+                <label>Hub server interface <input type="text" name="hub_server_intf" placeholder="{{ defaults.hub_server_intf }}" value="{{ overrides.hub_server_intf if overrides else '' }}"></label>
+                <label>Spoke client interface <input type="text" name="spoke_client_intf" placeholder="{{ defaults.spoke_client_intf }}" value="{{ overrides.spoke_client_intf if overrides else '' }}"></label>
+                <label>Traffictest port <input type="text" name="traffictest_port" placeholder="{{ defaults.traffictest_port }}" value="{{ overrides.traffictest_port if overrides else '' }}"></label>
+                <label>Traffictest duration (s) <input type="number" name="traffictest_duration" value="{{ overrides.traffictest_duration if overrides else defaults.traffictest_duration }}" min="1"></label>
+                <label>Hub server start delay (s) <input type="number" step="0.1" name="hub_server_start_delay" value="{{ overrides.hub_server_start_delay if overrides else defaults.hub_server_start_delay }}" min="0"></label>
+                <label>Delay between spokes (s) <input type="number" name="delay_seconds" value="{{ overrides.delay_seconds if overrides else 0 }}" min="0"></label>
+                <label>Per-command timeout (s, 0 = none) <input type="number" name="timeout" value="{{ overrides.timeout if overrides else 0 }}" min="0"></label>
+            </div>
+            <label class="inline"><input type="checkbox" name="skip_hub_setup" value="1" {% if overrides and overrides.skip_hub_setup %}checked{% endif %}> Skip hub setup</label>
+            <label class="inline"><input type="checkbox" name="dry_run" value="1" {% if overrides and overrides.dry_run %}checked{% endif %}> Dry run</label>
+        </fieldset>
+
+        <button type="submit">{% if schedule %}Save changes{% else %}Create schedule{% endif %}</button>
+        <a href="/schedules" style="margin-left:14px;color:var(--muted);text-decoration:none;">Cancel</a>
+    </form>
+</section>
+
+<script>
+(function () {
+    const select = document.getElementById("pattern-select");
+    const blocks = document.querySelectorAll("[data-pattern]");
+    function update() {
+        const value = select.value;
+        for (const b of blocks) {
+            const patterns = b.getAttribute("data-pattern").split(/\s+/);
+            b.hidden = !patterns.includes(value);
+        }
+    }
+    select.addEventListener("change", update);
+    update();
+})();
+</script>
+{% endblock %}

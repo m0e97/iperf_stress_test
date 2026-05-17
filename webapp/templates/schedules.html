@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Schedules — FortiGate Traffic Test Runner{% endblock %}
+{% block content %}
+<section class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <div>
+            <h1>Schedules</h1>
+            <p class="muted" style="margin:0;">Recurring or one-shot tests against saved devices.</p>
+        </div>
+        <a class="button" href="/schedules/new">New Schedule</a>
+    </div>
+
+    {% if message %}<div class="banner ok" style="margin-top:14px;">{{ message }}</div>{% endif %}
+    {% if error %}<div class="banner err" style="margin-top:14px;">{{ error }}</div>{% endif %}
+    {% if active_job_id %}
+    <div class="banner warn" style="margin-top:14px;">
+        A run is in progress: <a href="/run/{{ active_job_id }}">job {{ active_job_id }}</a>. Schedules that fire while a run is active are skipped.
+    </div>
+    {% endif %}
+
+    {% if not schedules %}
+    <p class="muted" style="margin-top:14px;">No schedules yet. <a href="/schedules/new">Create one</a>.</p>
+    {% else %}
+    <table class="reports" style="margin-top:14px;">
+        <thead>
+            <tr>
+                <th>Name</th><th>Pattern</th><th>When</th><th>Devices</th>
+                <th>Next run</th><th>Last run</th><th>Status</th><th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for s in schedules %}
+            <tr>
+                <td>
+                    <strong>{{ s.name }}</strong><br>
+                    <span class="badge {% if s.enabled %}ok{% else %}warn{% endif %}">{{ "enabled" if s.enabled else "disabled" }}</span>
+                </td>
+                <td><code>{{ s.pattern }}</code></td>
+                <td>
+                    {% if s.pattern == "once" %}{{ s.run_time }}
+                    {% elif s.pattern == "daily" %}every day at {{ s.run_time }}
+                    {% else %}{{ s.days_label }} at {{ s.run_time }}{% endif %}
+                </td>
+                <td>{{ s.device_summary }}</td>
+                <td>{{ s.next_run_at or "—" }}</td>
+                <td>{{ s.last_run_at or "—" }}{% if s.last_run_status %} <span class="badge {% if s.last_run_status == 'fired' %}ok{% elif s.last_run_status == 'error' %}err{% else %}warn{% endif %}">{{ s.last_run_status }}</span>{% endif %}</td>
+                <td>{% if s.last_run_id %}<a href="/run/{{ s.last_run_id }}">log</a>{% endif %}</td>
+                <td style="white-space:nowrap;">
+                    <a href="/schedules/{{ s.id }}/edit">edit</a>
+                    <form action="/schedules/{{ s.id }}/toggle" method="post" style="display:inline;">
+                        <button type="submit" class="secondary" style="padding:4px 10px;font-size:0.8em;">{{ "Disable" if s.enabled else "Enable" }}</button>
+                    </form>
+                    <form action="/schedules/{{ s.id }}/run" method="post" style="display:inline;">
+                        <button type="submit" class="secondary" style="padding:4px 10px;font-size:0.8em;">Run now</button>
+                    </form>
+                    <form action="/schedules/{{ s.id }}/delete" method="post" style="display:inline;" onsubmit="return confirm('Delete schedule {{ s.name }}?');">
+                        <button type="submit" class="secondary" style="padding:4px 10px;font-size:0.8em;color:var(--err);">Delete</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+{% endblock %}

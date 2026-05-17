@@ -38,7 +38,7 @@ for d in (UPLOAD_DIR,):
 sys.path.insert(0, str(ROOT))
 import main as engine  # noqa: E402
 
-from webapp import db, ftp_archive, serialize  # noqa: E402
+from webapp import db, ftp_archive, scheduler, serialize  # noqa: E402
 
 db.init_db(DB_PATH)
 
@@ -571,28 +571,26 @@ async def device_import(input_file: UploadFile):
     )
 
 
-@app.post("/devices/run")
-async def devices_run(
-    device_ids: list[int] = Form(...),
-    sshuser: str = Form(""),
-    sshpw: str = Form(""),
-    hub_ip: str = Form(""),
-    hub_mgmt_ip: str = Form(""),
-    hub_server_intf: str = Form(""),
-    spoke_client_intf: str = Form(""),
-    traffictest_port: str = Form(""),
-    traffictest_duration: int = Form(engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS),
-    hub_server_start_delay: float = Form(engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS),
-    delay_seconds: int = Form(0),
-    timeout: int = Form(0),
-    skip_hub_setup: bool = Form(False),
-    dry_run: bool = Form(False),
-):
+def _start_run_for_devices(
+    *,
+    device_ids: list[int],
+    sshuser: str,
+    sshpw: str,
+    overrides: dict[str, Any],
+) -> tuple[bool, str, str | None]:
+    """Shared entry used by HTTP devices_run and the scheduler. Returns (ok, message, run_id)."""
     if not device_ids:
-        raise HTTPException(status_code=400, detail="No devices selected.")
-    job = _new_job(source="devices", input_name=f"{len(device_ids)} device(s)", device_ids=device_ids)
+        return False, "No devices selected.", None
+    if _active_job_id() is not None:
+        active = JOBS.get(_active_job_id() or "")
+        if active and active.status == "running":
+            return False, f"A run is already in progress (job {active.id}).", None
 
-    # Synthesize a CSV file from the selected devices so we can reuse the engine.
+    try:
+        job = _new_job(source="devices", input_name=f"{len(device_ids)} device(s)", device_ids=device_ids)
+    except HTTPException as exc:
+        return False, str(exc.detail), None
+
     upload_path = UPLOAD_DIR / f"{job.id}.csv"
     with upload_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
@@ -612,22 +610,24 @@ async def devices_run(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_path = UPLOAD_DIR / f"_render_{timestamp}_{job.id}.html"
 
+    o = overrides
     settings = {
-        "sshuser": sshuser, "hub_ip": hub_ip, "hub_mgmt_ip": hub_mgmt_ip,
-        "hub_server_intf": hub_server_intf, "spoke_client_intf": spoke_client_intf,
-        "traffictest_port": traffictest_port, "traffictest_duration": traffictest_duration,
-        "hub_server_start_delay": hub_server_start_delay, "delay_seconds": delay_seconds,
-        "timeout": timeout, "skip_hub_setup": skip_hub_setup, "dry_run": dry_run,
-        "device_ids": list(device_ids),
+        "sshuser": sshuser, "device_ids": list(device_ids), **o,
     }
     argv = _build_argv(
         input_path=upload_path, output_path=output_path,
-        sshuser=sshuser, hub_ip=hub_ip, hub_mgmt_ip=hub_mgmt_ip,
-        hub_server_intf=hub_server_intf, spoke_client_intf=spoke_client_intf,
-        traffictest_port=traffictest_port, traffictest_duration=traffictest_duration,
-        hub_server_start_delay=hub_server_start_delay, delay_seconds=delay_seconds,
-        timeout=timeout if timeout > 0 else None,
-        skip_hub_setup=skip_hub_setup, dry_run=dry_run,
+        sshuser=sshuser,
+        hub_ip=o.get("hub_ip", ""),
+        hub_mgmt_ip=o.get("hub_mgmt_ip", ""),
+        hub_server_intf=o.get("hub_server_intf", ""),
+        spoke_client_intf=o.get("spoke_client_intf", ""),
+        traffictest_port=o.get("traffictest_port", ""),
+        traffictest_duration=int(o.get("traffictest_duration") or engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS),
+        hub_server_start_delay=float(o.get("hub_server_start_delay") or engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS),
+        delay_seconds=int(o.get("delay_seconds") or 0),
+        timeout=int(o["timeout"]) if int(o.get("timeout") or 0) > 0 else None,
+        skip_hub_setup=bool(o.get("skip_hub_setup")),
+        dry_run=bool(o.get("dry_run")),
     )
 
     thread = threading.Thread(
@@ -635,7 +635,39 @@ async def devices_run(
     )
     job.thread = thread
     thread.start()
-    return RedirectResponse(url=f"/run/{job.id}", status_code=303)
+    return True, f"started run {job.id}", job.id
+
+
+@app.post("/devices/run")
+async def devices_run(
+    device_ids: list[int] = Form(...),
+    sshuser: str = Form(""),
+    sshpw: str = Form(""),
+    hub_ip: str = Form(""),
+    hub_mgmt_ip: str = Form(""),
+    hub_server_intf: str = Form(""),
+    spoke_client_intf: str = Form(""),
+    traffictest_port: str = Form(""),
+    traffictest_duration: int = Form(engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS),
+    hub_server_start_delay: float = Form(engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS),
+    delay_seconds: int = Form(0),
+    timeout: int = Form(0),
+    skip_hub_setup: bool = Form(False),
+    dry_run: bool = Form(False),
+):
+    overrides = {
+        "hub_ip": hub_ip, "hub_mgmt_ip": hub_mgmt_ip,
+        "hub_server_intf": hub_server_intf, "spoke_client_intf": spoke_client_intf,
+        "traffictest_port": traffictest_port, "traffictest_duration": traffictest_duration,
+        "hub_server_start_delay": hub_server_start_delay, "delay_seconds": delay_seconds,
+        "timeout": timeout, "skip_hub_setup": skip_hub_setup, "dry_run": dry_run,
+    }
+    ok, message, run_id = _start_run_for_devices(
+        device_ids=device_ids, sshuser=sshuser, sshpw=sshpw, overrides=overrides,
+    )
+    if not ok:
+        raise HTTPException(status_code=409 if "in progress" in message.lower() else 400, detail=message)
+    return RedirectResponse(url=f"/run/{run_id}", status_code=303)
 
 
 # --- Archive --------------------------------------------------------------
@@ -738,9 +770,252 @@ def archive_render(run_id: str, fmt: str):
         )
 
 
+# --- Schedules ------------------------------------------------------------
+
+_DAYS = [(1, "Mon"), (2, "Tue"), (3, "Wed"), (4, "Thu"), (5, "Fri"), (6, "Sat"), (7, "Sun")]
+
+
+def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Validate and normalize a schedule form payload. Returns (values, error_or_None)."""
+    name = (form.get("name") or "").strip()
+    pattern = (form.get("pattern") or "").strip()
+    if not name:
+        return {}, "Name is required."
+    if pattern not in {"once", "daily", "weekly"}:
+        return {}, "Pattern must be once, daily, or weekly."
+
+    raw_devices = form.get("device_ids") or []
+    if isinstance(raw_devices, str):
+        raw_devices = [raw_devices]
+    try:
+        device_ids = [int(x) for x in raw_devices if str(x).strip()]
+    except ValueError:
+        return {}, "Invalid device id in selection."
+    if not device_ids:
+        return {}, "Select at least one device."
+
+    sshuser = (form.get("sshuser") or "").strip()
+    sshpw = form.get("sshpw") or ""
+    if not sshuser or not sshpw:
+        return {}, "SSH username and password are required."
+
+    days_of_week = ""
+    if pattern == "once":
+        run_time = (form.get("run_at") or "").strip()  # 'YYYY-MM-DDTHH:MM'
+        if not run_time:
+            return {}, "Date and time are required for 'once'."
+    elif pattern == "daily":
+        run_time = (form.get("time_of_day") or "").strip()
+        if not run_time:
+            return {}, "Time of day is required for 'daily'."
+    else:  # weekly
+        run_time = (form.get("time_of_day") or "").strip()
+        if not run_time:
+            return {}, "Time of day is required for 'weekly'."
+        raw_days = form.get("days") or []
+        if isinstance(raw_days, str):
+            raw_days = [raw_days]
+        try:
+            days = sorted({int(d) for d in raw_days if 1 <= int(d) <= 7})
+        except ValueError:
+            return {}, "Invalid day-of-week value."
+        if not days:
+            return {}, "Select at least one day of the week."
+        days_of_week = ",".join(str(d) for d in days)
+
+    overrides = {
+        "hub_ip": form.get("hub_ip") or "",
+        "hub_mgmt_ip": form.get("hub_mgmt_ip") or "",
+        "hub_server_intf": form.get("hub_server_intf") or "",
+        "spoke_client_intf": form.get("spoke_client_intf") or "",
+        "traffictest_port": form.get("traffictest_port") or "",
+        "traffictest_duration": int(form.get("traffictest_duration") or engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS),
+        "hub_server_start_delay": float(form.get("hub_server_start_delay") or engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS),
+        "delay_seconds": int(form.get("delay_seconds") or 0),
+        "timeout": int(form.get("timeout") or 0),
+        "skip_hub_setup": bool(form.get("skip_hub_setup")),
+        "dry_run": bool(form.get("dry_run")),
+    }
+
+    next_dt = scheduler.compute_next_run(
+        pattern=pattern, run_time=run_time, days_of_week=days_of_week,
+    )
+    next_run_at = next_dt.isoformat(timespec="seconds") if next_dt else None
+
+    return {
+        "name": name,
+        "enabled": form.get("enabled", True),
+        "pattern": pattern,
+        "run_time": run_time,
+        "days_of_week": days_of_week,
+        "device_ids": json.dumps(device_ids),
+        "sshuser": sshuser,
+        "sshpw": sshpw,
+        "overrides_json": json.dumps(overrides),
+        "next_run_at": next_run_at,
+    }, None
+
+
+@app.get("/schedules", response_class=HTMLResponse)
+def schedules_page(request: Request, error: str = "", message: str = ""):
+    schedules = db.list_schedules()
+    # Decorate with device summaries
+    for s in schedules:
+        try:
+            ids = json.loads(s["device_ids"])
+        except Exception:  # noqa: BLE001
+            ids = []
+        names = []
+        for did in ids:
+            d = db.get_device(int(did))
+            if d:
+                names.append(d["name"] or d["spoke_ip"])
+        s["device_summary"] = ", ".join(names) if names else f"{len(ids)} device(s)"
+        if s["pattern"] == "weekly" and s["days_of_week"]:
+            label_map = dict(_DAYS)
+            try:
+                s["days_label"] = ", ".join(label_map[int(d)] for d in s["days_of_week"].split(","))
+            except (KeyError, ValueError):
+                s["days_label"] = s["days_of_week"]
+        else:
+            s["days_label"] = ""
+    return templates.TemplateResponse(
+        "schedules.html",
+        {
+            "request": request, "schedules": schedules,
+            "active_job_id": _active_job_id(),
+            "error": error, "message": message,
+        },
+    )
+
+
+@app.get("/schedules/new", response_class=HTMLResponse)
+def schedule_new_form(request: Request, error: str = ""):
+    devices = db.list_devices()
+    return templates.TemplateResponse(
+        "schedule_edit.html",
+        {
+            "request": request, "devices": devices, "schedule": None,
+            "selected_device_ids": [], "days_list": _DAYS, "selected_days": [],
+            "active_job_id": _active_job_id(), "error": error,
+            "defaults": {
+                "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
+                "spoke_client_intf": engine.DEFAULT_SPOKE_CLIENT_INTF,
+                "traffictest_port": engine.DEFAULT_TRAFFICTEST_PORT,
+                "traffictest_duration": engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS,
+                "hub_server_start_delay": engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS,
+            },
+        },
+    )
+
+
+@app.post("/schedules/new")
+async def schedule_create(request: Request):
+    form_data = await request.form()
+    form = {k: form_data.getlist(k) if k in {"device_ids", "days"} else form_data.get(k) for k in form_data.keys()}
+    values, err = _parse_schedule_form(form)
+    if err:
+        return RedirectResponse(url=f"/schedules?error={err}", status_code=303)
+    db.create_schedule(values)
+    return RedirectResponse(url="/schedules?message=Schedule+created", status_code=303)
+
+
+@app.get("/schedules/{schedule_id}/edit", response_class=HTMLResponse)
+def schedule_edit_form(request: Request, schedule_id: int):
+    s = db.get_schedule(schedule_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    devices = db.list_devices()
+    try:
+        selected_ids = [int(x) for x in json.loads(s["device_ids"])]
+    except Exception:  # noqa: BLE001
+        selected_ids = []
+    selected_days = [int(d) for d in (s["days_of_week"] or "").split(",") if d.strip()]
+    overrides = json.loads(s["overrides_json"] or "{}")
+    return templates.TemplateResponse(
+        "schedule_edit.html",
+        {
+            "request": request, "devices": devices, "schedule": s,
+            "selected_device_ids": selected_ids, "days_list": _DAYS,
+            "selected_days": selected_days, "overrides": overrides,
+            "active_job_id": _active_job_id(),
+            "defaults": {
+                "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
+                "spoke_client_intf": engine.DEFAULT_SPOKE_CLIENT_INTF,
+                "traffictest_port": engine.DEFAULT_TRAFFICTEST_PORT,
+                "traffictest_duration": engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS,
+                "hub_server_start_delay": engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS,
+            },
+        },
+    )
+
+
+@app.post("/schedules/{schedule_id}/edit")
+async def schedule_update(schedule_id: int, request: Request):
+    form_data = await request.form()
+    form = {k: form_data.getlist(k) if k in {"device_ids", "days"} else form_data.get(k) for k in form_data.keys()}
+    values, err = _parse_schedule_form(form)
+    if err:
+        return RedirectResponse(url=f"/schedules?error={err}", status_code=303)
+    db.update_schedule(schedule_id, values)
+    return RedirectResponse(url="/schedules?message=Schedule+updated", status_code=303)
+
+
+@app.post("/schedules/{schedule_id}/delete")
+def schedule_delete(schedule_id: int):
+    db.delete_schedule(schedule_id)
+    return RedirectResponse(url="/schedules?message=Schedule+deleted", status_code=303)
+
+
+@app.post("/schedules/{schedule_id}/toggle")
+def schedule_toggle(schedule_id: int):
+    s = db.get_schedule(schedule_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    new_enabled = not bool(s["enabled"])
+    next_at = None
+    if new_enabled:
+        next_dt = scheduler.compute_next_run(
+            pattern=s["pattern"], run_time=s["run_time"], days_of_week=s["days_of_week"],
+        )
+        next_at = next_dt.isoformat(timespec="seconds") if next_dt else None
+    db.set_schedule_enabled(schedule_id, new_enabled, next_at)
+    return RedirectResponse(url="/schedules", status_code=303)
+
+
+@app.post("/schedules/{schedule_id}/run")
+def schedule_run_now(schedule_id: int):
+    s = db.get_schedule(schedule_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    try:
+        device_ids = [int(x) for x in json.loads(s["device_ids"])]
+        overrides = json.loads(s["overrides_json"] or "{}")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid schedule payload: {exc}")
+    ok, message, run_id = _start_run_for_devices(
+        device_ids=device_ids, sshuser=s["sshuser"], sshpw=s["sshpw"], overrides=overrides,
+    )
+    if not ok:
+        raise HTTPException(status_code=409 if "in progress" in message.lower() else 400, detail=message)
+    return RedirectResponse(url=f"/run/{run_id}", status_code=303)
+
+
 # --- Health ---------------------------------------------------------------
 
 @app.get("/healthz")
 def healthz():
     ftp_ok, ftp_detail = ftp_archive.ping()
     return {"ok": True, "ftp": {"ok": ftp_ok, "detail": ftp_detail}}
+
+
+# --- Startup --------------------------------------------------------------
+
+@app.on_event("startup")
+def _startup_scheduler() -> None:
+    scheduler.start(
+        start_run_callable=lambda *, device_ids, sshuser, sshpw, overrides:
+            _start_run_for_devices(
+                device_ids=device_ids, sshuser=sshuser, sshpw=sshpw, overrides=overrides,
+            )
+    )

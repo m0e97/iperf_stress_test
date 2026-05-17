@@ -55,6 +55,26 @@ CREATE TABLE IF NOT EXISTS run_sites (
 
 CREATE INDEX IF NOT EXISTS idx_run_sites_device ON run_sites(device_id);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at);
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    pattern TEXT NOT NULL,                  -- 'once' | 'daily' | 'weekly'
+    run_time TEXT NOT NULL,                 -- 'HH:MM' for daily/weekly, 'YYYY-MM-DDTHH:MM' for once
+    days_of_week TEXT DEFAULT '',           -- '1,3,5' (mon=1..sun=7) for weekly
+    device_ids TEXT NOT NULL,               -- JSON array of device ids
+    sshuser TEXT NOT NULL,
+    sshpw TEXT NOT NULL,                    -- plaintext; protect the DB volume
+    overrides_json TEXT NOT NULL DEFAULT '{}',
+    next_run_at TEXT,                       -- ISO timestamp of next scheduled fire
+    last_run_at TEXT,
+    last_run_id TEXT,
+    last_run_status TEXT,                   -- 'fired' | 'skipped_busy' | 'error'
+    last_run_message TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_next ON schedules(enabled, next_run_at);
 """
 
 
@@ -258,6 +278,114 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
     return dict(row) if row else None
+
+
+# --- Schedules ------------------------------------------------------------
+
+SCHEDULE_COLUMNS = (
+    "name", "enabled", "pattern", "run_time", "days_of_week",
+    "device_ids", "sshuser", "sshpw", "overrides_json", "next_run_at",
+)
+
+
+def list_schedules() -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute("SELECT * FROM schedules ORDER BY enabled DESC, name").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_schedule(schedule_id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def due_schedules(now_iso: str) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM schedules WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at",
+            (now_iso,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_schedule(values: dict[str, Any]) -> int:
+    payload = {
+        "name": (values.get("name") or "").strip(),
+        "enabled": 1 if values.get("enabled", True) else 0,
+        "pattern": (values.get("pattern") or "").strip(),
+        "run_time": (values.get("run_time") or "").strip(),
+        "days_of_week": (values.get("days_of_week") or "").strip(),
+        "device_ids": values.get("device_ids") or "[]",
+        "sshuser": (values.get("sshuser") or "").strip(),
+        "sshpw": values.get("sshpw") or "",
+        "overrides_json": values.get("overrides_json") or "{}",
+        "next_run_at": values.get("next_run_at"),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    cols = list(payload.keys())
+    placeholders = ",".join("?" for _ in cols)
+    with _connect() as conn:
+        cur = conn.execute(
+            f"INSERT INTO schedules ({','.join(cols)}) VALUES ({placeholders})",
+            [payload[c] for c in cols],
+        )
+        return int(cur.lastrowid)
+
+
+def update_schedule(schedule_id: int, values: dict[str, Any]) -> None:
+    payload = {
+        "name": (values.get("name") or "").strip(),
+        "enabled": 1 if values.get("enabled", True) else 0,
+        "pattern": (values.get("pattern") or "").strip(),
+        "run_time": (values.get("run_time") or "").strip(),
+        "days_of_week": (values.get("days_of_week") or "").strip(),
+        "device_ids": values.get("device_ids") or "[]",
+        "sshuser": (values.get("sshuser") or "").strip(),
+        "sshpw": values.get("sshpw") or "",
+        "overrides_json": values.get("overrides_json") or "{}",
+        "next_run_at": values.get("next_run_at"),
+    }
+    assignments = ",".join(f"{col} = ?" for col in payload)
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE schedules SET {assignments} WHERE id = ?",
+            [*payload.values(), schedule_id],
+        )
+
+
+def delete_schedule(schedule_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+
+
+def set_schedule_enabled(schedule_id: int, enabled: bool, next_run_at: str | None) -> None:
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE schedules SET enabled = ?, next_run_at = ? WHERE id = ?",
+            (1 if enabled else 0, next_run_at, schedule_id),
+        )
+
+
+def mark_schedule_fired(
+    schedule_id: int,
+    *,
+    last_run_at: str,
+    last_run_id: str | None,
+    last_run_status: str,
+    last_run_message: str,
+    next_run_at: str | None,
+    enabled: bool,
+) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """UPDATE schedules
+               SET last_run_at = ?, last_run_id = ?, last_run_status = ?, last_run_message = ?,
+                   next_run_at = ?, enabled = ?
+               WHERE id = ?""",
+            (last_run_at, last_run_id, last_run_status, last_run_message,
+             next_run_at, 1 if enabled else 0, schedule_id),
+        )
 
 
 def runs_for_device(device_id: int) -> list[dict[str, Any]]:

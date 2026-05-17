@@ -2,22 +2,68 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}FortiGate Traffic Test Runner{% endblock %}</title>
     <link rel="stylesheet" href="/static/styles.css">
+    <script>
+        // Apply persisted theme before paint to avoid flash.
+        (function () {
+            try {
+                const t = localStorage.getItem("theme") || "dark";
+                document.documentElement.setAttribute("data-theme", t);
+            } catch (e) {}
+        })();
+    </script>
 </head>
 <body>
-<header>
-    <div class="header-inner">
-        <a href="/" class="brand">FortiGate Traffic Test Runner</a>
-        <nav>
-            <a href="/">CSV Run</a>
-            <a href="/devices">Devices</a>
-            <a href="/archive">Archive</a>
-        </nav>
+{% set path = request.url.path %}
+<aside class="sidebar">
+    <a class="brand" href="/">
+        <span class="brand-mark">FT</span>
+        <span class="brand-text">Traffic Test</span>
+    </a>
+    <nav class="side-nav">
+        <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>
+            <span class="nav-icon">↗</span> New Run
+        </a>
+        <a href="/devices" {% if path.startswith('/devices') %}aria-current="page"{% endif %}>
+            <span class="nav-icon">◇</span> Devices
+        </a>
+        <a href="/archive" {% if path.startswith('/archive') %}aria-current="page"{% endif %}>
+            <span class="nav-icon">▤</span> Archive
+        </a>
+    </nav>
+    <div class="sidebar-footer">
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle theme">
+            <span class="theme-toggle-icon"></span>
+            <span class="theme-toggle-label"></span>
+        </button>
     </div>
-</header>
-<main>
+</aside>
+
+<main class="main-area">
     {% block content %}{% endblock %}
 </main>
+
+<script>
+(function () {
+    const btn = document.getElementById("theme-toggle");
+    const icon = btn.querySelector(".theme-toggle-icon");
+    const label = btn.querySelector(".theme-toggle-label");
+    const apply = (t) => {
+        document.documentElement.setAttribute("data-theme", t);
+        icon.textContent = t === "light" ? "☾" : "☀";
+        label.textContent = t === "light" ? "Dark mode" : "Light mode";
+    };
+    apply(document.documentElement.getAttribute("data-theme") || "dark");
+    btn.addEventListener("click", () => {
+        const cur = document.documentElement.getAttribute("data-theme") || "dark";
+        const next = cur === "dark" ? "light" : "dark";
+        try { localStorage.setItem("theme", next); } catch (e) {}
+        apply(next);
+        document.dispatchEvent(new CustomEvent("themechange", { detail: next }));
+    });
+})();
+</script>
 </body>
 </html>

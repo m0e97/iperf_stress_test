@@ -24,59 +24,53 @@
     (function () {
         const data = JSON.parse(document.getElementById("chart-data").textContent);
         const svg = document.getElementById("throughput-chart");
-        const W = 800, H = 280, PAD_L = 50, PAD_R = 20, PAD_T = 20, PAD_B = 36;
-        const innerW = W - PAD_L - PAD_R;
-        const innerH = H - PAD_T - PAD_B;
 
-        const target = data.target_mbps;
-        const values = data.points.map(p => p.throughput_mbps);
-        let yMax = Math.max(target || 0, ...values) * 1.15;
-        if (!isFinite(yMax) || yMax <= 0) yMax = 1;
+        function render() {
+            const W = 800, H = 280, PAD_L = 50, PAD_R = 20, PAD_T = 20, PAD_B = 36;
+            const innerW = W - PAD_L - PAD_R;
+            const innerH = H - PAD_T - PAD_B;
+            const target = data.target_mbps;
+            const values = data.points.map(p => p.throughput_mbps);
+            let yMax = Math.max(target || 0, ...values) * 1.15;
+            if (!isFinite(yMax) || yMax <= 0) yMax = 1;
+            const ticks = [0, 0.25, 0.5, 0.75, 1.0].map(t => t * yMax);
+            const niceLabel = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(1).replace(/\.0$/, "");
+            const x = (i) => PAD_L + (data.points.length <= 1 ? innerW / 2 : (i * innerW) / (data.points.length - 1));
+            const y = (v) => PAD_T + innerH - (v / yMax) * innerH;
+            const parts = [];
 
-        // Tick generation: 4 nice gridlines.
-        const ticks = [0, 0.25, 0.5, 0.75, 1.0].map(t => t * yMax);
-
-        const niceLabel = (v) => v >= 100 ? v.toFixed(0) : v.toFixed(1).replace(/\.0$/, "");
-        const x = (i) => PAD_L + (data.points.length <= 1 ? innerW / 2 : (i * innerW) / (data.points.length - 1));
-        const y = (v) => PAD_T + innerH - (v / yMax) * innerH;
-
-        const parts = [];
-        // Y gridlines + labels
-        for (const t of ticks) {
-            const yy = y(t);
-            parts.push(`<line x1="${PAD_L}" y1="${yy}" x2="${W - PAD_R}" y2="${yy}" stroke="#2b303b" stroke-dasharray="4 4"/>`);
-            parts.push(`<text x="${PAD_L - 8}" y="${yy + 4}" fill="#9aa3af" font-size="11" text-anchor="end">${niceLabel(t)}</text>`);
-        }
-        // Target line
-        if (target) {
-            const yy = y(target);
-            parts.push(`<line x1="${PAD_L}" y1="${yy}" x2="${W - PAD_R}" y2="${yy}" stroke="#16a34a" stroke-width="2" stroke-dasharray="6 4"/>`);
-            parts.push(`<text x="${W - PAD_R}" y="${yy - 6}" fill="#16a34a" font-size="11" text-anchor="end">target ${niceLabel(target)} Mbps</text>`);
-        }
-        // Line through points
-        if (data.points.length > 1) {
-            const pathPts = data.points.map((p, i) => `${x(i)},${y(p.throughput_mbps)}`).join(" ");
-            parts.push(`<polyline points="${pathPts}" fill="none" stroke="#3b82f6" stroke-width="2"/>`);
-        }
-        // Dots
-        data.points.forEach((p, i) => {
-            const color = target == null ? "#3b82f6" : (p.passed ? "#16a34a" : "#dc2626");
-            const cx = x(i), cy = y(p.throughput_mbps);
-            parts.push(`<circle cx="${cx}" cy="${cy}" r="5" fill="${color}" stroke="#0f1115" stroke-width="1.5"><title>${p.started_at} — ${niceLabel(p.throughput_mbps)} Mbps</title></circle>`);
-        });
-        // X labels: first and last timestamps
-        if (data.points.length) {
-            const first = data.points[0].started_at.replace("T", " ").slice(0, 16);
-            const last = data.points[data.points.length - 1].started_at.replace("T", " ").slice(0, 16);
-            parts.push(`<text x="${PAD_L}" y="${H - 12}" fill="#9aa3af" font-size="11" text-anchor="start">${first}</text>`);
-            if (data.points.length > 1) {
-                parts.push(`<text x="${W - PAD_R}" y="${H - 12}" fill="#9aa3af" font-size="11" text-anchor="end">${last}</text>`);
+            for (const t of ticks) {
+                const yy = y(t);
+                parts.push(`<line class="chart-grid" x1="${PAD_L}" y1="${yy}" x2="${W - PAD_R}" y2="${yy}"/>`);
+                parts.push(`<text class="chart-axis" x="${PAD_L - 8}" y="${yy + 4}" text-anchor="end">${niceLabel(t)}</text>`);
             }
+            if (target) {
+                const yy = y(target);
+                parts.push(`<line x1="${PAD_L}" y1="${yy}" x2="${W - PAD_R}" y2="${yy}" stroke="#16a34a" stroke-width="2" stroke-dasharray="6 4"/>`);
+                parts.push(`<text x="${W - PAD_R}" y="${yy - 6}" fill="#16a34a" font-size="11" text-anchor="end">target ${niceLabel(target)} Mbps</text>`);
+            }
+            if (data.points.length > 1) {
+                const pathPts = data.points.map((p, i) => `${x(i)},${y(p.throughput_mbps)}`).join(" ");
+                parts.push(`<polyline class="chart-line" points="${pathPts}"/>`);
+            }
+            data.points.forEach((p, i) => {
+                const color = target == null ? "var(--chart-line)" : (p.passed ? "#22c55e" : "#ef4444");
+                const cx = x(i), cy = y(p.throughput_mbps);
+                parts.push(`<circle class="chart-dot" cx="${cx}" cy="${cy}" r="5.5" fill="${color}"><title>${p.started_at} — ${niceLabel(p.throughput_mbps)} Mbps</title></circle>`);
+            });
+            if (data.points.length) {
+                const first = data.points[0].started_at.replace("T", " ").slice(0, 16);
+                const last = data.points[data.points.length - 1].started_at.replace("T", " ").slice(0, 16);
+                parts.push(`<text class="chart-axis" x="${PAD_L}" y="${H - 12}" text-anchor="start">${first}</text>`);
+                if (data.points.length > 1) {
+                    parts.push(`<text class="chart-axis" x="${W - PAD_R}" y="${H - 12}" text-anchor="end">${last}</text>`);
+                }
+            }
+            parts.push(`<text class="chart-axis" x="14" y="${PAD_T + innerH / 2}" text-anchor="middle" transform="rotate(-90, 14, ${PAD_T + innerH / 2})">Mbps</text>`);
+            svg.innerHTML = parts.join("");
         }
-        // Y axis title
-        parts.push(`<text x="14" y="${PAD_T + innerH / 2}" fill="#9aa3af" font-size="11" text-anchor="middle" transform="rotate(-90, 14, ${PAD_T + innerH / 2})">Mbps</text>`);
-
-        svg.innerHTML = parts.join("");
+        render();
+        document.addEventListener("themechange", render);
     })();
     </script>
     {% elif device.speed %}

@@ -5,10 +5,10 @@ This project contains a Python script, `main.py`, that runs FortiGate `diagnose 
 It is available in three forms:
 
 - **CLI / interactive GUI** — `python main.py ...` (see [Basic Usage](#basic-usage)).
-- **Web app** — a FastAPI front-end at `http://localhost:8800` (see [Web Application](#web-application)).
-- **Docker container** — image bundling the web app (see [Docker](#docker)).
+- **Web app** — FastAPI front-end at `http://localhost:8800` with a persistent device catalog, scheduled runs, FTP-backed result archive, and on-demand HTML / XLSX / PDF rendering (see [Web Application](#web-application)).
+- **Docker container** — `docker compose up --build` brings up the web app and the FTP archive together (see [Docker](#docker)).
 
-The web app and Docker image are thin wrappers around the same `main.py` engine — every CLI flag is exposed as a form field.
+The web app reuses the CLI engine under the hood — every flag still maps to a form field — and adds a UI layer with devices, schedules, an archive, and a throughput history chart.
 
 ## What The Script Does
 
@@ -368,9 +368,85 @@ The script exits with `0` when every spoke run succeeds and with `1` when at lea
 
 ## Web Application
 
-A FastAPI web front-end is included in [`webapp/`](webapp/). It mirrors every CLI option as a form field, streams live test output to the browser via Server-Sent Events, and serves the generated HTML/Excel/PDF reports.
+A FastAPI front-end in [`webapp/`](webapp/) wraps the CLI engine with a browser UI, a persistent device catalog, a FTP-backed archive of historic results, and a built-in scheduler. The recommended deployment is `docker compose up` ([Docker](#docker) below); a local-only mode is available for development.
 
-### Run Locally
+### Modes of running a test
+
+| Mode | Path | When to use |
+| --- | --- | --- |
+| **Quick Run** | `/` | One-off CSV / XLSX upload for an ad-hoc test. |
+| **Run on selected devices** | `/devices` | Pick from saved devices and start a run immediately. |
+| **Schedule** | `/schedules` | Recurring or one-shot fire at a future date/time. |
+
+All three modes go through the same engine, so the live log, archive, and reports look identical regardless of how the run was started.
+
+### Pages
+
+| Path | Purpose |
+| --- | --- |
+| `/` | Quick Run from a CSV / XLSX file |
+| `/devices` | Persistent device catalog (add / edit / delete / import / run on selected) |
+| `/devices/{id}/edit` | Edit one device |
+| `/schedules` | List, toggle, edit, delete, manually fire scheduled runs |
+| `/schedules/new`, `/schedules/{id}/edit` | Schedule form (once / daily / weekly / monthly / yearly) |
+| `/archive` | Device-centric list of all devices that have run history |
+| `/archive/device/{id}` | All runs for a device, with the throughput timeline chart |
+| `/archive/run/{id}/render/{fmt}` | Render an archived run as `html` / `xlsx` / `pdf` on demand |
+| `/run/{id}` | Live log view (SSE) for an in-flight or recent run |
+| `/run/{id}/stream`, `/run/{id}/status` | SSE stream and JSON status, used by the run page |
+| `/healthz` | Liveness probe — also reports FTP reachability |
+
+### Devices catalog
+
+Devices are stored in SQLite at `/data/app.db`. Each row mirrors the CLI input file columns (spoke IP, hub IP, hub mgmt IP, speed, server intf, client intf, traffictest port). Add devices manually from the **Add Device** modal, or bulk-import a CSV / XLSX — existing rows (matched by `spoke_ip + hub_ip`) are updated in place. CSV runs from the Quick Run page also get linked to their matching device by IP, so historic results show up in both flows.
+
+### Schedules
+
+Scheduled tasks fire through the same code path as the manual "Run on selected" button. Supported patterns:
+
+| Pattern | Example | Notes |
+| --- | --- | --- |
+| `once` | `2026-12-31T10:00` | Auto-disables itself after firing. |
+| `daily` | every day at `09:00` | Rolls to tomorrow's HH:MM after firing. |
+| `weekly` | Mon, Wed, Fri at `08:30` | Multiple checked days; picks the next selected weekday. |
+| `monthly` | day `15` at `09:00` | Day-of-month clamps to the last day in shorter months (e.g. `31` → Feb 28). |
+| `yearly` | `December 31` at `00:00` | Month + day-of-month with the same clamping rule. |
+
+A background poller (every 30 s) queries the schedules table for rows with `next_run_at <= now`. If a run is already active when a schedule fires, the attempt is recorded as `skipped_busy` and the next fire is still advanced.
+
+**SSH credentials are stored in plaintext** in `/data/app.db` because the scheduler needs to fire unattended. Protect the data volume at the filesystem level. The schedule form shows a banner reminding you.
+
+### Archive (FTP)
+
+Runs are archived to a separate **FTP container** (`garethflowers/ftp-server`) on an internal docker network. The web app uploads the raw `SiteRun` data as a single JSON file per run, keyed by run id. Reports are **not** pre-rendered — when you click **HTML / XLSX / PDF** on a historic run, the web app fetches the JSON from FTP and runs the report builders on the fly. The upside: re-rendering with updated templates "just works" for all past runs.
+
+The FTP server uses fixed credentials (`archive` / `archive`) and is **not exposed to the host** by default — only the runner container can reach it over the bridge network. Change the credentials in [`docker-compose.yml`](docker-compose.yml) if you publish the FTP port.
+
+### Throughput timeline chart
+
+The device archive page (`/archive/device/{id}`) shows a per-device throughput timeline:
+
+- Y-axis: measured Mbps. X-axis: run timestamps (oldest → newest).
+- Dashed green line marks the device's configured target speed.
+- Dots are **green if throughput ≥ target**, **red if below**. Hover for a tooltip with the timestamp and value.
+
+The chart is inline SVG with theme-aware colors — no CDN dependency.
+
+### Theme
+
+A circular icon button in the top-right corner toggles between dark and light themes. The choice is persisted to `localStorage` and applied before paint so there's no flash on page load.
+
+### Concurrency
+
+The web app accepts **one run at a time**. New submissions to `/run`, `/devices/run`, or `/schedules/{id}/run` return HTTP 409 while a run is active; scheduled fires record `skipped_busy`. Within a run, the engine's per-hub parallelism is preserved — multiple hubs run in parallel, each hub queue runs its spokes sequentially.
+
+### Auth
+
+The web app does **not** authenticate. Bind it to a trusted network (`127.0.0.1` or an internal interface), or put it behind a reverse proxy that enforces auth. SSH credentials and the schedule database are unencrypted on the wire and on disk, so terminate TLS at a reverse proxy and protect the `/data` volume at the filesystem level.
+
+### Run locally (no Docker)
+
+The local path skips the FTP archive (and therefore the on-demand re-render flow). Useful for poking at the UI; not the recommended deployment.
 
 ```bash
 python -m venv .venv
@@ -379,45 +455,11 @@ pip install -r requirements.txt
 uvicorn webapp.app:app --host 0.0.0.0 --port 8800
 ```
 
-Then open <http://localhost:8800>.
-
-Uploaded input files and generated reports are stored under `./data/` by default. Override the location with the `IPERF_DATA_DIR` environment variable.
-
-### Pages
-
-| Path | Purpose |
-| --- | --- |
-| `/` | Ad-hoc CSV / XLSX upload + run form |
-| `/devices` | Persistent device list (CRUD + CSV import + "run on selected") |
-| `/devices/{id}/edit` | Edit one device |
-| `/archive` | Browse historic results, device-centric |
-| `/archive/device/{id}` | All runs that included this device |
-| `/archive/run/{id}/render/{fmt}` | Render archived run as `html` / `xlsx` / `pdf` on demand |
-| `/run/{id}` | Live log view for an in-flight run |
-| `/run/{id}/stream` | SSE stream of stdout/stderr |
-| `/run/{id}/status` | JSON status (used by the run page) |
-| `/healthz` | Liveness probe — also reports FTP reachability |
-
-### Persistence
-
-The web app uses two stores, both behind a single `/data` volume:
-
-- **SQLite (`/data/app.db`)** — keeps the devices catalog and a lightweight index of every run (id, status, summary, which devices it covered, FTP archive filename).
-- **FTP archive (separate container)** — stores the raw run results as JSON (one file per run). Reports are **not** pre-rendered; the web app fetches the JSON on demand and runs the HTML / XLSX / PDF builders when you click a format button. This means re-rendering with updated report templates "just works" for past runs.
-
-The FTP server is on an internal docker network only and uses fixed credentials (`archive` / `archive`); change them in [`docker-compose.yml`](docker-compose.yml) if needed.
-
-### Concurrency
-
-The web app accepts **one run at a time**. While a run is active, new submissions return HTTP 409. Within a run, the existing parallel model is preserved: hubs are set up in parallel, and each hub queue runs its spokes sequentially while different hubs run in parallel.
-
-### No Auth
-
-The web app does not authenticate. Bind it to a trusted network (`127.0.0.1` or an internal interface), or put it behind a reverse proxy that enforces auth. Note that SSH credentials are sent in the form body — terminate TLS at a reverse proxy if you expose it beyond localhost.
+Then open <http://localhost:8800>. Override the data location with `IPERF_DATA_DIR=/some/path`.
 
 ## Docker
 
-A `Dockerfile` and `docker-compose.yml` are included.
+A [`Dockerfile`](Dockerfile) and [`docker-compose.yml`](docker-compose.yml) are included. Compose is the recommended way to run — it brings up both the web app and the FTP archive on a shared internal network.
 
 ### Build and run
 
@@ -425,21 +467,18 @@ A `Dockerfile` and `docker-compose.yml` are included.
 docker compose up --build
 ```
 
-Then open <http://localhost:8800>. Uploads and reports persist on the host under `./data/`.
+Then open <http://localhost:8800>. The SQLite database, uploaded inputs, and archived run JSON all live under `./data/` on the host.
 
-### Network Reachability
+### Network reachability
 
-The container needs network access to your hub and spoke firewalls (SSH on TCP 22 and the traffictest port, default TCP 5201). If your firewalls are only reachable from the host network, uncomment the `network_mode: host` line in [`docker-compose.yml`](docker-compose.yml) (note: `network_mode: host` is Linux-only; on macOS/Windows you must use a routable bridge instead).
-
-### Standalone Docker (no compose)
-
-```bash
-docker build -t iperf-stress-test .
-docker run --rm -p 8800:8800 -v "$(pwd)/data:/data" iperf-stress-test
-```
+The container needs network access to your hub and spoke firewalls (SSH on TCP 22 and the traffictest port, default TCP 5201). If your firewalls are only reachable from the host network, uncomment the `network_mode: host` line in [`docker-compose.yml`](docker-compose.yml) (Linux only; on macOS / Windows use a routable bridge instead, or run uvicorn directly on the host).
 
 ### Environment
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `IPERF_DATA_DIR` | Base directory for uploads and reports | `/data` (container) / `./data` (local) |
+| `IPERF_DATA_DIR` | Base directory for uploads and the SQLite DB | `/data` (container), `./data` (local) |
+| `FTP_HOST` | FTP archive hostname | `ftp-archive` (compose service name) |
+| `FTP_PORT` | FTP archive port | `21` |
+| `FTP_USER`, `FTP_PASS` | FTP credentials | `archive` / `archive` |
+| `FTP_TIMEOUT` | FTP socket timeout (seconds) | `20` |

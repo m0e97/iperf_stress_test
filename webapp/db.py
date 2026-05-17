@@ -288,12 +288,6 @@ def get_run(run_id: str) -> dict[str, Any] | None:
 
 # --- Schedules ------------------------------------------------------------
 
-SCHEDULE_COLUMNS = (
-    "name", "enabled", "pattern", "run_time", "days_of_week",
-    "device_ids", "sshuser", "sshpw", "overrides_json", "next_run_at",
-)
-
-
 def list_schedules() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute("SELECT * FROM schedules ORDER BY enabled DESC, name").fetchall()

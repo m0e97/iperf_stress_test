@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 import calendar
 import csv
-import io
 import json
 import os
-import queue
 import shlex
 import shutil
 import sys
@@ -33,8 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("IPERF_DATA_DIR", str(ROOT / "data"))).resolve()
 UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "app.db"
-for d in (UPLOAD_DIR,):
-    d.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(ROOT))
 import main as engine  # noqa: E402
@@ -57,14 +54,14 @@ class JobState:
     log_lines: list[str] = field(default_factory=list)
     log_lock: threading.Lock = field(default_factory=threading.Lock)
     new_line_event: threading.Event = field(default_factory=threading.Event)
-    queue: queue.Queue = field(default_factory=queue.Queue)
-    thread: threading.Thread | None = None
     input_name: str = ""
     source: str = "csv"
     archive_filename: str | None = None
     started_at: datetime = field(default_factory=datetime.now)
     finished_at: datetime | None = None
-    captured_runs: Any = None  # filled by the hook
+    # Filled by the engine.build_html_report / engine.summarize monkey-patches
+    # so we can serialize the run to FTP after _run_tests returns.
+    captured_runs: Any = None
     captured_summary: dict[str, Any] = field(default_factory=dict)
     captured_templates: list[str] = field(default_factory=list)
     captured_delay: int = 0
@@ -388,11 +385,9 @@ async def start_run(
         skip_hub_setup=skip_hub_setup, dry_run=dry_run,
     )
 
-    thread = threading.Thread(
+    threading.Thread(
         target=_run_job, args=(job, argv, sshpw, upload_path, settings), daemon=True,
-    )
-    job.thread = thread
-    thread.start()
+    ).start()
     return RedirectResponse(url=f"/run/{job.id}", status_code=303)
 
 
@@ -644,11 +639,9 @@ def _start_run_for_devices(
         dry_run=bool(o.get("dry_run")),
     )
 
-    thread = threading.Thread(
+    threading.Thread(
         target=_run_job, args=(job, argv, sshpw, upload_path, settings), daemon=True,
-    )
-    job.thread = thread
-    thread.start()
+    ).start()
     return True, f"started run {job.id}", job.id
 
 
@@ -933,27 +926,6 @@ def schedules_page(request: Request, error: str = "", message: str = ""):
     )
 
 
-@app.get("/schedules/new", response_class=HTMLResponse)
-def schedule_new_form(request: Request, error: str = ""):
-    devices = db.list_devices()
-    return templates.TemplateResponse(
-        "schedule_edit.html",
-        {
-            "request": request, "devices": devices, "schedule": None,
-            "selected_device_ids": [], "days_list": _DAYS, "selected_days": [],
-            "months_list": _MONTHS,
-            "active_job_id": _active_job_id(), "error": error,
-            "defaults": {
-                "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
-                "spoke_client_intf": engine.DEFAULT_SPOKE_CLIENT_INTF,
-                "traffictest_port": engine.DEFAULT_TRAFFICTEST_PORT,
-                "traffictest_duration": engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS,
-                "hub_server_start_delay": engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS,
-            },
-        },
-    )
-
-
 def _schedule_form_ctx(request: Request, schedule: dict | None, form: dict[str, Any] | None = None, error: str = "") -> dict[str, Any]:
     """Build the template ctx for the schedule edit form, optionally pre-filled from a failed POST."""
     devices = db.list_devices()
@@ -1026,6 +998,25 @@ def _schedule_form_ctx(request: Request, schedule: dict | None, form: dict[str, 
     }
 
 
+@app.get("/schedules/new", response_class=HTMLResponse)
+def schedule_new_form(request: Request):
+    return templates.TemplateResponse(
+        "schedule_edit.html",
+        _schedule_form_ctx(request, schedule=None),
+    )
+
+
+@app.get("/schedules/{schedule_id}/edit", response_class=HTMLResponse)
+def schedule_edit_form(request: Request, schedule_id: int):
+    s = db.get_schedule(schedule_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail="Schedule not found.")
+    return templates.TemplateResponse(
+        "schedule_edit.html",
+        _schedule_form_ctx(request, schedule=s),
+    )
+
+
 @app.post("/schedules/new")
 async def schedule_create(request: Request):
     form_data = await request.form()
@@ -1039,37 +1030,6 @@ async def schedule_create(request: Request):
         )
     db.create_schedule(values)
     return RedirectResponse(url="/schedules?message=Schedule+created", status_code=303)
-
-
-@app.get("/schedules/{schedule_id}/edit", response_class=HTMLResponse)
-def schedule_edit_form(request: Request, schedule_id: int):
-    s = db.get_schedule(schedule_id)
-    if s is None:
-        raise HTTPException(status_code=404, detail="Schedule not found.")
-    devices = db.list_devices()
-    try:
-        selected_ids = [int(x) for x in json.loads(s["device_ids"])]
-    except Exception:  # noqa: BLE001
-        selected_ids = []
-    selected_days = [int(d) for d in (s["days_of_week"] or "").split(",") if d.strip()]
-    overrides = json.loads(s["overrides_json"] or "{}")
-    return templates.TemplateResponse(
-        "schedule_edit.html",
-        {
-            "request": request, "devices": devices, "schedule": s,
-            "selected_device_ids": selected_ids, "days_list": _DAYS,
-            "selected_days": selected_days, "overrides": overrides,
-            "months_list": _MONTHS,
-            "active_job_id": _active_job_id(),
-            "defaults": {
-                "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
-                "spoke_client_intf": engine.DEFAULT_SPOKE_CLIENT_INTF,
-                "traffictest_port": engine.DEFAULT_TRAFFICTEST_PORT,
-                "traffictest_duration": engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS,
-                "hub_server_start_delay": engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS,
-            },
-        },
-    )
 
 
 @app.post("/schedules/{schedule_id}/edit")

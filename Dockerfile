@@ -6,17 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-client ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py ./
 COPY webapp ./webapp
-
-RUN mkdir -p /data/uploads /data/reports
 
 EXPOSE 8800
 

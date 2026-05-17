@@ -45,9 +45,8 @@
     </div>
 </aside>
 
-<button id="theme-toggle" class="theme-toggle theme-toggle-floating" type="button" aria-label="Toggle theme">
-    <span data-theme-option="light">☀ Light</span>
-    <span data-theme-option="dark">☾ Dark</span>
+<button id="theme-toggle" class="theme-toggle-icon" type="button" aria-label="Toggle theme" title="Toggle theme">
+    <span id="theme-toggle-glyph">☾</span>
 </button>
 
 <main class="main-area">
@@ -57,10 +56,12 @@
 <script>
 (function () {
     const btn = document.getElementById("theme-toggle");
-    const opts = btn.querySelectorAll("[data-theme-option]");
+    const glyph = document.getElementById("theme-toggle-glyph");
     function apply(t) {
         document.documentElement.setAttribute("data-theme", t);
-        opts.forEach(o => o.classList.toggle("active", o.dataset.themeOption === t));
+        // Show the icon for the theme you'll switch TO.
+        glyph.textContent = t === "dark" ? "☀" : "☾";
+        btn.setAttribute("aria-label", t === "dark" ? "Switch to light theme" : "Switch to dark theme");
     }
     apply(document.documentElement.getAttribute("data-theme") || "dark");
     btn.addEventListener("click", () => {

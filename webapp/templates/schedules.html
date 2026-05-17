@@ -39,7 +39,10 @@
                 <td>
                     {% if s.pattern == "once" %}{{ s.run_time }}
                     {% elif s.pattern == "daily" %}every day at {{ s.run_time }}
-                    {% else %}{{ s.days_label }} at {{ s.run_time }}{% endif %}
+                    {% elif s.pattern == "weekly" %}{{ s.days_label }} at {{ s.run_time }}
+                    {% elif s.pattern == "monthly" %}day {{ s.day_of_month }} at {{ s.run_time }}
+                    {% elif s.pattern == "yearly" %}{{ s.month_name }} {{ s.day_of_month }} at {{ s.run_time }}
+                    {% else %}{{ s.run_time }}{% endif %}
                 </td>
                 <td>{{ s.device_summary }}</td>
                 <td>{{ s.next_run_at or "—" }}</td>

@@ -24,6 +24,8 @@
                     <option value="once" {% if schedule and schedule.pattern == 'once' %}selected{% endif %}>Once (specific date and time)</option>
                     <option value="daily" {% if schedule and schedule.pattern == 'daily' %}selected{% endif %}>Daily</option>
                     <option value="weekly" {% if schedule and schedule.pattern == 'weekly' %}selected{% endif %}>Weekly</option>
+                    <option value="monthly" {% if schedule and schedule.pattern == 'monthly' %}selected{% endif %}>Monthly</option>
+                    <option value="yearly" {% if schedule and schedule.pattern == 'yearly' %}selected{% endif %}>Yearly</option>
                 </select>
             </label>
 
@@ -33,10 +35,10 @@
                            value="{{ schedule.run_time if schedule and schedule.pattern == 'once' else '' }}">
                 </label>
             </div>
-            <div data-pattern="daily weekly" hidden>
+            <div data-pattern="daily weekly monthly yearly" hidden>
                 <label>Time of day (24h, HH:MM)
                     <input type="time" name="time_of_day"
-                           value="{{ schedule.run_time if schedule and schedule.pattern in ('daily','weekly') else '' }}">
+                           value="{{ schedule.run_time if schedule and schedule.pattern in ('daily','weekly','monthly','yearly') else '' }}">
                 </label>
             </div>
             <div data-pattern="weekly" hidden>
@@ -48,6 +50,22 @@
                     </label>
                     {% endfor %}
                 </div>
+            </div>
+            <div data-pattern="monthly yearly" hidden>
+                <label>Day of month (1–31, clamped to last day in shorter months)
+                    <input type="number" name="day_of_month" min="1" max="31"
+                           value="{{ schedule.day_of_month if schedule and schedule.day_of_month else '' }}">
+                </label>
+            </div>
+            <div data-pattern="yearly" hidden>
+                <label>Month
+                    <select name="month_of_year">
+                        <option value="">— select —</option>
+                        {% for n, lbl in months_list %}
+                        <option value="{{ n }}" {% if schedule and schedule.month_of_year == n %}selected{% endif %}>{{ lbl }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
             </div>
         </fieldset>
 

@@ -88,10 +88,16 @@ def init_db(path: Path) -> None:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Idempotent column additions for run_sites."""
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(run_sites)")}
-    if "throughput_mbps" not in existing:
+    """Idempotent column additions."""
+    rs_cols = {row["name"] for row in conn.execute("PRAGMA table_info(run_sites)")}
+    if "throughput_mbps" not in rs_cols:
         conn.execute("ALTER TABLE run_sites ADD COLUMN throughput_mbps REAL")
+
+    sched_cols = {row["name"] for row in conn.execute("PRAGMA table_info(schedules)")}
+    if "day_of_month" not in sched_cols:
+        conn.execute("ALTER TABLE schedules ADD COLUMN day_of_month INTEGER")
+    if "month_of_year" not in sched_cols:
+        conn.execute("ALTER TABLE schedules ADD COLUMN month_of_year INTEGER")
 
 
 @contextmanager
@@ -309,20 +315,26 @@ def due_schedules(now_iso: str) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def create_schedule(values: dict[str, Any]) -> int:
-    payload = {
+def _schedule_payload(values: dict[str, Any]) -> dict[str, Any]:
+    return {
         "name": (values.get("name") or "").strip(),
         "enabled": 1 if values.get("enabled", True) else 0,
         "pattern": (values.get("pattern") or "").strip(),
         "run_time": (values.get("run_time") or "").strip(),
         "days_of_week": (values.get("days_of_week") or "").strip(),
+        "day_of_month": values.get("day_of_month"),
+        "month_of_year": values.get("month_of_year"),
         "device_ids": values.get("device_ids") or "[]",
         "sshuser": (values.get("sshuser") or "").strip(),
         "sshpw": values.get("sshpw") or "",
         "overrides_json": values.get("overrides_json") or "{}",
         "next_run_at": values.get("next_run_at"),
-        "created_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+def create_schedule(values: dict[str, Any]) -> int:
+    payload = _schedule_payload(values)
+    payload["created_at"] = datetime.now().isoformat(timespec="seconds")
     cols = list(payload.keys())
     placeholders = ",".join("?" for _ in cols)
     with _connect() as conn:
@@ -334,18 +346,7 @@ def create_schedule(values: dict[str, Any]) -> int:
 
 
 def update_schedule(schedule_id: int, values: dict[str, Any]) -> None:
-    payload = {
-        "name": (values.get("name") or "").strip(),
-        "enabled": 1 if values.get("enabled", True) else 0,
-        "pattern": (values.get("pattern") or "").strip(),
-        "run_time": (values.get("run_time") or "").strip(),
-        "days_of_week": (values.get("days_of_week") or "").strip(),
-        "device_ids": values.get("device_ids") or "[]",
-        "sshuser": (values.get("sshuser") or "").strip(),
-        "sshpw": values.get("sshpw") or "",
-        "overrides_json": values.get("overrides_json") or "{}",
-        "next_run_at": values.get("next_run_at"),
-    }
+    payload = _schedule_payload(values)
     assignments = ",".join(f"{col} = ?" for col in payload)
     with _connect() as conn:
         conn.execute(

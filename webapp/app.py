@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import csv
 import io
 import json
@@ -773,6 +774,7 @@ def archive_render(run_id: str, fmt: str):
 # --- Schedules ------------------------------------------------------------
 
 _DAYS = [(1, "Mon"), (2, "Tue"), (3, "Wed"), (4, "Thu"), (5, "Fri"), (6, "Sat"), (7, "Sun")]
+_MONTHS = [(i, calendar.month_name[i]) for i in range(1, 13)]
 
 
 def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
@@ -781,8 +783,8 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
     pattern = (form.get("pattern") or "").strip()
     if not name:
         return {}, "Name is required."
-    if pattern not in {"once", "daily", "weekly"}:
-        return {}, "Pattern must be once, daily, or weekly."
+    if pattern not in {"once", "daily", "weekly", "monthly", "yearly"}:
+        return {}, "Pattern must be once, daily, weekly, monthly, or yearly."
 
     raw_devices = form.get("device_ids") or []
     if isinstance(raw_devices, str):
@@ -800,6 +802,8 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
         return {}, "SSH username and password are required."
 
     days_of_week = ""
+    day_of_month: int | None = None
+    month_of_year: int | None = None
     if pattern == "once":
         run_time = (form.get("run_at") or "").strip()  # 'YYYY-MM-DDTHH:MM'
         if not run_time:
@@ -808,7 +812,7 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
         run_time = (form.get("time_of_day") or "").strip()
         if not run_time:
             return {}, "Time of day is required for 'daily'."
-    else:  # weekly
+    elif pattern == "weekly":
         run_time = (form.get("time_of_day") or "").strip()
         if not run_time:
             return {}, "Time of day is required for 'weekly'."
@@ -822,6 +826,29 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
         if not days:
             return {}, "Select at least one day of the week."
         days_of_week = ",".join(str(d) for d in days)
+    elif pattern == "monthly":
+        run_time = (form.get("time_of_day") or "").strip()
+        if not run_time:
+            return {}, "Time of day is required for 'monthly'."
+        try:
+            day_of_month = int(form.get("day_of_month") or 0)
+        except ValueError:
+            return {}, "Day of month must be an integer."
+        if not (1 <= day_of_month <= 31):
+            return {}, "Day of month must be between 1 and 31."
+    else:  # yearly
+        run_time = (form.get("time_of_day") or "").strip()
+        if not run_time:
+            return {}, "Time of day is required for 'yearly'."
+        try:
+            month_of_year = int(form.get("month_of_year") or 0)
+            day_of_month = int(form.get("day_of_month") or 0)
+        except ValueError:
+            return {}, "Month and day must be integers."
+        if not (1 <= month_of_year <= 12):
+            return {}, "Month must be between 1 and 12."
+        if not (1 <= day_of_month <= 31):
+            return {}, "Day of month must be between 1 and 31."
 
     overrides = {
         "hub_ip": form.get("hub_ip") or "",
@@ -839,6 +866,7 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
 
     next_dt = scheduler.compute_next_run(
         pattern=pattern, run_time=run_time, days_of_week=days_of_week,
+        day_of_month=day_of_month, month_of_year=month_of_year,
     )
     next_run_at = next_dt.isoformat(timespec="seconds") if next_dt else None
 
@@ -848,6 +876,8 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
         "pattern": pattern,
         "run_time": run_time,
         "days_of_week": days_of_week,
+        "day_of_month": day_of_month,
+        "month_of_year": month_of_year,
         "device_ids": json.dumps(device_ids),
         "sshuser": sshuser,
         "sshpw": sshpw,
@@ -879,6 +909,7 @@ def schedules_page(request: Request, error: str = "", message: str = ""):
                 s["days_label"] = s["days_of_week"]
         else:
             s["days_label"] = ""
+        s["month_name"] = calendar.month_name[s["month_of_year"]] if s.get("month_of_year") else ""
     return templates.TemplateResponse(
         "schedules.html",
         {
@@ -897,6 +928,7 @@ def schedule_new_form(request: Request, error: str = ""):
         {
             "request": request, "devices": devices, "schedule": None,
             "selected_device_ids": [], "days_list": _DAYS, "selected_days": [],
+            "months_list": _MONTHS,
             "active_job_id": _active_job_id(), "error": error,
             "defaults": {
                 "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
@@ -938,6 +970,7 @@ def schedule_edit_form(request: Request, schedule_id: int):
             "request": request, "devices": devices, "schedule": s,
             "selected_device_ids": selected_ids, "days_list": _DAYS,
             "selected_days": selected_days, "overrides": overrides,
+            "months_list": _MONTHS,
             "active_job_id": _active_job_id(),
             "defaults": {
                 "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
@@ -977,6 +1010,7 @@ def schedule_toggle(schedule_id: int):
     if new_enabled:
         next_dt = scheduler.compute_next_run(
             pattern=s["pattern"], run_time=s["run_time"], days_of_week=s["days_of_week"],
+            day_of_month=s.get("day_of_month"), month_of_year=s.get("month_of_year"),
         )
         next_at = next_dt.isoformat(timespec="seconds") if next_dt else None
     db.set_schedule_enabled(schedule_id, new_enabled, next_at)

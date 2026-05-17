@@ -261,6 +261,7 @@ def _run_job(
                     "device_id": None,  # filled in by lookup, overridden below for devices source
                     "status": site_run.status,
                     "display_name": site_run.site.display_name or "",
+                    "throughput_mbps": site_run.max_throughput_mbps,
                 })
             # If source is 'devices', force device_id mapping by (spoke_ip, hub_ip)
             if job.source == "devices" and job.device_ids:
@@ -654,9 +655,32 @@ def archive_device(request: Request, device_id: int):
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found.")
     runs = db.runs_for_device(device_id)
+    target_mbps = engine.parse_speed_to_mbps(device["speed"] or "") if device.get("speed") else None
+    chart_points = [
+        {
+            "run_id": r["id"],
+            "started_at": r["started_at"],
+            "throughput_mbps": r["throughput_mbps"],
+            "passed": (
+                r["throughput_mbps"] is not None
+                and target_mbps is not None
+                and r["throughput_mbps"] >= target_mbps
+            ),
+        }
+        for r in runs
+        if r["throughput_mbps"] is not None
+    ]
+    chart_points.reverse()  # oldest → newest for left-to-right plotting
     return templates.TemplateResponse(
         "device_archive.html",
-        {"request": request, "device": device, "runs": runs, "active_job_id": _active_job_id()},
+        {
+            "request": request,
+            "device": device,
+            "runs": runs,
+            "active_job_id": _active_job_id(),
+            "target_mbps": target_mbps,
+            "chart_points": chart_points,
+        },
     )
 
 

@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS run_sites (
     site_status TEXT,
     display_name TEXT DEFAULT '',
     hub_ip TEXT DEFAULT '',
+    throughput_mbps REAL,
     PRIMARY KEY (run_id, spoke_ip),
     FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE,
     FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE SET NULL
@@ -63,6 +64,14 @@ def init_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with _connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent column additions for run_sites."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(run_sites)")}
+    if "throughput_mbps" not in existing:
+        conn.execute("ALTER TABLE run_sites ADD COLUMN throughput_mbps REAL")
 
 
 @contextmanager
@@ -238,9 +247,10 @@ def insert_run_sites(run_id: str, sites: list[dict[str, Any]]) -> None:
                     device_id = matched["id"]
             conn.execute(
                 """INSERT OR REPLACE INTO run_sites
-                   (run_id, spoke_ip, device_id, site_status, display_name, hub_ip)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (run_id, spoke, device_id, site.get("status"), site.get("display_name", ""), hub),
+                   (run_id, spoke_ip, device_id, site_status, display_name, hub_ip, throughput_mbps)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, spoke, device_id, site.get("status"), site.get("display_name", ""),
+                 hub, site.get("throughput_mbps")),
             )
 
 
@@ -254,7 +264,8 @@ def runs_for_device(device_id: int) -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
             """SELECT r.id, r.started_at, r.finished_at, r.status, r.exit_code,
-                      r.archive_filename, rs.site_status, rs.display_name
+                      r.archive_filename, rs.site_status, rs.display_name,
+                      rs.throughput_mbps
                FROM run_sites rs
                JOIN runs r ON r.id = rs.run_id
                WHERE rs.device_id = ?

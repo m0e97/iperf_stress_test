@@ -4,6 +4,7 @@ __pycache__/
 devices.csv
 .venv/
 data/
+dist/
 Reports/
 /*.html
 /*.xlsx

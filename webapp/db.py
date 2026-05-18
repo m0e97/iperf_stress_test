@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS devices (
     server_intf TEXT DEFAULT '',
     client_intf TEXT DEFAULT '',
     traffictest_port TEXT DEFAULT '',
+    circuit_id TEXT DEFAULT '',
+    isp TEXT DEFAULT '',
     notes TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     UNIQUE(spoke_ip, hub_ip)
@@ -99,6 +101,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "month_of_year" not in sched_cols:
         conn.execute("ALTER TABLE schedules ADD COLUMN month_of_year INTEGER")
 
+    dev_cols = {row["name"] for row in conn.execute("PRAGMA table_info(devices)")}
+    if "circuit_id" not in dev_cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN circuit_id TEXT DEFAULT ''")
+    if "isp" not in dev_cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN isp TEXT DEFAULT ''")
+
 
 @contextmanager
 def _connect() -> Iterator[sqlite3.Connection]:
@@ -118,7 +126,8 @@ def _connect() -> Iterator[sqlite3.Connection]:
 
 DEVICE_COLUMNS = (
     "name", "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed",
-    "server_intf", "client_intf", "traffictest_port", "notes",
+    "server_intf", "client_intf", "traffictest_port",
+    "circuit_id", "isp", "notes",
 )
 
 

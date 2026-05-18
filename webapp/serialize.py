@@ -69,6 +69,8 @@ def _serialize_site(site: engine.SiteDefinition) -> dict[str, Any]:
         "spoke_client_intf": site.spoke_client_intf,
         "traffictest_port": site.traffictest_port,
         "hub_name": site.hub_name,
+        "circuit_id": site.circuit_id,
+        "isp": site.isp,
     }
 
 
@@ -89,6 +91,8 @@ def _deserialize_site(data: dict[str, Any]) -> engine.SiteDefinition:
         spoke_client_intf=data.get("spoke_client_intf", ""),
         traffictest_port=data.get("traffictest_port", ""),
         hub_name=data.get("hub_name", ""),
+        circuit_id=data.get("circuit_id", ""),
+        isp=data.get("isp", ""),
     )
 
 

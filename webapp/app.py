@@ -494,6 +494,8 @@ async def device_create(
     server_intf: str = Form(""),
     client_intf: str = Form(""),
     traffictest_port: str = Form(""),
+    circuit_id: str = Form(""),
+    isp: str = Form(""),
     notes: str = Form(""),
 ):
     try:
@@ -501,7 +503,9 @@ async def device_create(
             "name": name, "spoke_ip": spoke_ip, "hub_ip": hub_ip,
             "hub_mgmt_ip": hub_mgmt_ip, "speed": speed,
             "server_intf": server_intf, "client_intf": client_intf,
-            "traffictest_port": traffictest_port, "notes": notes,
+            "traffictest_port": traffictest_port,
+            "circuit_id": circuit_id, "isp": isp,
+            "notes": notes,
         })
     except Exception as exc:  # noqa: BLE001
         return RedirectResponse(url=f"/devices?error={exc}", status_code=303)
@@ -530,13 +534,17 @@ async def device_update(
     server_intf: str = Form(""),
     client_intf: str = Form(""),
     traffictest_port: str = Form(""),
+    circuit_id: str = Form(""),
+    isp: str = Form(""),
     notes: str = Form(""),
 ):
     db.update_device(device_id, {
         "name": name, "spoke_ip": spoke_ip, "hub_ip": hub_ip,
         "hub_mgmt_ip": hub_mgmt_ip, "speed": speed,
         "server_intf": server_intf, "client_intf": client_intf,
-        "traffictest_port": traffictest_port, "notes": notes,
+        "traffictest_port": traffictest_port,
+        "circuit_id": circuit_id, "isp": isp,
+        "notes": notes,
     })
     return RedirectResponse(url="/devices?message=Device+updated", status_code=303)
 
@@ -571,6 +579,8 @@ async def device_import(input_file: UploadFile):
             "server_intf": engine.find_first_value(norm, engine.HUB_SERVER_INTF_ALIASES),
             "client_intf": engine.find_first_value(norm, engine.SPOKE_CLIENT_INTF_ALIASES),
             "traffictest_port": engine.find_first_value(norm, engine.TRAFFICTEST_PORT_ALIASES),
+            "circuit_id": engine.find_first_value(norm, engine.CIRCUIT_ID_ALIASES),
+            "isp": engine.find_first_value(norm, engine.ISP_ALIASES),
             "notes": "",
         })
     inserted, updated = db.upsert_devices_from_rows(normalized)
@@ -606,6 +616,7 @@ def _start_run_for_devices(
         writer.writerow([
             "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed",
             "server_intf", "client_intf", "traffictest_port",
+            "circuit_id", "isp",
         ])
         for did in device_ids:
             d = db.get_device(did)
@@ -614,6 +625,7 @@ def _start_run_for_devices(
             writer.writerow([
                 d["spoke_ip"], d["hub_ip"], d["hub_mgmt_ip"], d["speed"],
                 d["server_intf"], d["client_intf"], d["traffictest_port"],
+                d.get("circuit_id") or "", d.get("isp") or "",
             ])
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

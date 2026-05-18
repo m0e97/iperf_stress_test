@@ -122,6 +122,22 @@ TRAFFICTEST_PORT_ALIASES = {
     "iperf_port",
     "test_port",
 }
+CIRCUIT_ID_ALIASES = {
+    "circuit_id",
+    "circuit",
+    "circuitid",
+    "circuit_no",
+    "circuit_number",
+    "circuit_reference",
+    "circuit_ref",
+}
+ISP_ALIASES = {
+    "isp",
+    "carrier",
+    "provider",
+    "service_provider",
+    "telco",
+}
 
 
 @dataclass
@@ -141,6 +157,8 @@ class SiteDefinition:
     spoke_client_intf: str = ""
     traffictest_port: str = ""
     hub_name: str = ""
+    circuit_id: str = ""
+    isp: str = ""
 
 
 @dataclass
@@ -402,6 +420,8 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
         hub_server_intf = find_first_value(placeholders, HUB_SERVER_INTF_ALIASES)
         spoke_client_intf = find_first_value(placeholders, SPOKE_CLIENT_INTF_ALIASES)
         traffictest_port = find_first_value(placeholders, TRAFFICTEST_PORT_ALIASES)
+        circuit_id = find_first_value(placeholders, CIRCUIT_ID_ALIASES)
+        isp = find_first_value(placeholders, ISP_ALIASES)
         speed_mbps = parse_speed_to_mbps(speed)
         speed_with_margin_mbps = round(speed_mbps * 1.15, 2) if speed_mbps is not None else None
         speed_with_margin_label = format_mbps_for_traffictest(speed_with_margin_mbps)
@@ -430,6 +450,8 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
                 hub_server_intf=hub_server_intf,
                 spoke_client_intf=spoke_client_intf,
                 traffictest_port=traffictest_port,
+                circuit_id=circuit_id,
+                isp=isp,
             )
         )
     return sites
@@ -1413,9 +1435,9 @@ def build_html_report(
             <tr data-result="{row_result}">
               <td>{index}</td>
               <td>{name}</td>
-              <td>{speed}</td>
-              <td>{ip}</td>
-              <td>{hub_ip}</td>
+              <td>{circuit_id}</td>
+              <td>{isp}</td>
+              <td>{bw}</td>
               <td>{test_speed}</td>
               <td>{sender}</td>
               <td>{started}</td>
@@ -1424,9 +1446,9 @@ def build_html_report(
             """.format(
                 index=site_run.site.index,
                 name=html.escape(site_run.site.display_name),
-                ip=html.escape(site_run.site.ip_address or "N/A"),
-                hub_ip=html.escape(_hub_display(site_run.site)),
-                speed=html.escape(site_run.site.speed or "N/A"),
+                circuit_id=html.escape(site_run.site.circuit_id or "N/A"),
+                isp=html.escape(site_run.site.isp or "N/A"),
+                bw=html.escape(site_run.site.speed or "N/A"),
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
                 sender=html.escape(format_peak(sender_mbps)),
                 started=html.escape(format_timestamp(site_run.started_at)),
@@ -1639,9 +1661,9 @@ def build_html_report(
           <tr>
             <th>#</th>
             <th>Site name</th>
-            <th>Speed</th>
-            <th>IP</th>
-            <th>Hub</th>
+            <th>Circuit ID</th>
+            <th>ISP</th>
+            <th>BW</th>
             <th>Generated traffic</th>
             <th>Actual bandwidth</th>
             <th>Started</th>
@@ -1685,7 +1707,7 @@ def build_excel_report(results: list[SiteRun], summary: dict[str, Any], output_p
     ws = wb.active
     ws.title = "Results"
 
-    headers = ["#", "Site Name", "Speed", "IP", "Hub IP", "Generated Traffic", "Actual Bandwidth", "Started", "Result"]
+    headers = ["#", "Site Name", "Circuit ID", "ISP", "BW", "Generated Traffic", "Actual Bandwidth", "Started", "Result"]
     ws.append(headers)
     for cell in ws[1]:
         cell.fill = PatternFill("solid", fgColor="2D2D2D")
@@ -1702,9 +1724,9 @@ def build_excel_report(results: list[SiteRun], summary: dict[str, Any], output_p
         ws.append([
             site_run.site.index,
             site_run.site.display_name,
+            site_run.site.circuit_id or "N/A",
+            site_run.site.isp or "N/A",
             site_run.site.speed or "N/A",
-            site_run.site.ip_address or "N/A",
-            _hub_display(site_run.site),
             site_run.site.speed_with_margin_label or "N/A",
             format_peak(site_run.max_sender_throughput_mbps),
             format_timestamp(site_run.started_at),
@@ -1762,7 +1784,7 @@ def build_pdf_report(results: list[SiteRun], summary: dict[str, Any], output_pat
     ))
     elements.append(Spacer(1, 12))
 
-    col_headers = ["#", "Site Name", "Speed", "IP", "Hub IP", "Generated Traffic", "Actual BW", "Started", "Result"]
+    col_headers = ["#", "Site Name", "Circuit ID", "ISP", "BW", "Generated Traffic", "Actual BW", "Started", "Result"]
     data: list[list[str]] = [col_headers]
     result_classes: list[str] = []
 
@@ -1772,9 +1794,9 @@ def build_pdf_report(results: list[SiteRun], summary: dict[str, Any], output_pat
         data.append([
             str(site_run.site.index),
             site_run.site.display_name,
+            site_run.site.circuit_id or "N/A",
+            site_run.site.isp or "N/A",
             site_run.site.speed or "N/A",
-            site_run.site.ip_address or "N/A",
-            _hub_display(site_run.site),
             site_run.site.speed_with_margin_label or "N/A",
             format_peak(site_run.max_sender_throughput_mbps),
             format_timestamp(site_run.started_at),

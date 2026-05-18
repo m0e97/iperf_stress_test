@@ -37,7 +37,9 @@
                     <th>Spoke IP</th>
                     <th>Hub IP</th>
                     <th>Hub Mgmt IP</th>
-                    <th>Speed</th>
+                    <th>Circuit ID</th>
+                    <th>ISP</th>
+                    <th>BW</th>
                     <th>Server intf</th>
                     <th>Client intf</th>
                     <th>Port</th>
@@ -54,6 +56,8 @@
                     <td><code>{{ d.spoke_ip }}</code></td>
                     <td><code>{{ d.hub_ip }}</code></td>
                     <td>{{ d.hub_mgmt_ip or "—" }}</td>
+                    <td>{{ d.circuit_id or "—" }}</td>
+                    <td>{{ d.isp or "—" }}</td>
                     <td>{{ d.speed or "—" }}</td>
                     <td>{{ d.server_intf or "—" }}</td>
                     <td>{{ d.client_intf or "—" }}</td>
@@ -126,7 +130,9 @@
                 <label>Spoke IP <input type="text" name="spoke_ip" required></label>
                 <label>Hub IP <input type="text" name="hub_ip" required></label>
                 <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip"></label>
-                <label>Speed <input type="text" name="speed" placeholder="100M"></label>
+                <label>Circuit ID <input type="text" name="circuit_id"></label>
+                <label>ISP <input type="text" name="isp"></label>
+                <label>BW <input type="text" name="speed" placeholder="100M"></label>
                 <label>Server intf <input type="text" name="server_intf"></label>
                 <label>Client intf <input type="text" name="client_intf"></label>
                 <label>Traffictest port <input type="text" name="traffictest_port"></label>

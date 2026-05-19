@@ -1436,8 +1436,8 @@ def build_html_report(
               <td>{index}</td>
               <td>{name}</td>
               <td>{circuit_id}</td>
-              <td>{isp}</td>
               <td>{bw}</td>
+              <td>{isp}</td>
               <td>{test_speed}</td>
               <td>{sender}</td>
               <td>{started}</td>
@@ -1662,8 +1662,8 @@ def build_html_report(
             <th>#</th>
             <th>Site name</th>
             <th>Circuit ID</th>
-            <th>ISP</th>
             <th>BW</th>
+            <th>ISP</th>
             <th>Generated traffic</th>
             <th>Actual bandwidth</th>
             <th>Started</th>
@@ -1707,7 +1707,7 @@ def build_excel_report(results: list[SiteRun], summary: dict[str, Any], output_p
     ws = wb.active
     ws.title = "Results"
 
-    headers = ["#", "Site Name", "Circuit ID", "ISP", "BW", "Generated Traffic", "Actual Bandwidth", "Started", "Result"]
+    headers = ["#", "Site Name", "Circuit ID", "BW", "ISP", "Generated Traffic", "Actual Bandwidth", "Started", "Result"]
     ws.append(headers)
     for cell in ws[1]:
         cell.fill = PatternFill("solid", fgColor="2D2D2D")
@@ -1725,8 +1725,8 @@ def build_excel_report(results: list[SiteRun], summary: dict[str, Any], output_p
             site_run.site.index,
             site_run.site.display_name,
             site_run.site.circuit_id or "N/A",
-            site_run.site.isp or "N/A",
             site_run.site.speed or "N/A",
+            site_run.site.isp or "N/A",
             site_run.site.speed_with_margin_label or "N/A",
             format_peak(site_run.max_sender_throughput_mbps),
             format_timestamp(site_run.started_at),
@@ -1784,7 +1784,7 @@ def build_pdf_report(results: list[SiteRun], summary: dict[str, Any], output_pat
     ))
     elements.append(Spacer(1, 12))
 
-    col_headers = ["#", "Site Name", "Circuit ID", "ISP", "BW", "Generated Traffic", "Actual BW", "Started", "Result"]
+    col_headers = ["#", "Site Name", "Circuit ID", "BW", "ISP", "Generated Traffic", "Actual BW", "Started", "Result"]
     data: list[list[str]] = [col_headers]
     result_classes: list[str] = []
 
@@ -1795,8 +1795,8 @@ def build_pdf_report(results: list[SiteRun], summary: dict[str, Any], output_pat
             str(site_run.site.index),
             site_run.site.display_name,
             site_run.site.circuit_id or "N/A",
-            site_run.site.isp or "N/A",
             site_run.site.speed or "N/A",
+            site_run.site.isp or "N/A",
             site_run.site.speed_with_margin_label or "N/A",
             format_peak(site_run.max_sender_throughput_mbps),
             format_timestamp(site_run.started_at),

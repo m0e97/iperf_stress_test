@@ -343,9 +343,9 @@ def index(request: Request):
             device_fail += 1
 
     return templates.TemplateResponse(
+        request,
         "index.html",
         {
-            "request": request,
             "defaults": {
                 "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
                 "spoke_client_intf": engine.DEFAULT_SPOKE_CLIENT_INTF,
@@ -423,9 +423,9 @@ def view_run(request: Request, job_id: str):
         if d:
             devices_for_run.append(d)
     return templates.TemplateResponse(
+        request,
         "run.html",
         {
-            "request": request,
             "job": job,
             "active_job_id": _active_job_id(),
             "devices_for_run": devices_for_run,
@@ -487,9 +487,9 @@ async def stream_run(job_id: str):
 def devices_page(request: Request, error: str = "", message: str = ""):
     devices = db.list_devices()
     return templates.TemplateResponse(
+        request,
         "devices.html",
         {
-            "request": request,
             "devices": devices,
             "defaults": {
                 "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
@@ -539,8 +539,9 @@ def device_edit_form(request: Request, device_id: int):
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found.")
     return templates.TemplateResponse(
+        request,
         "device_edit.html",
-        {"request": request, "device": device, "active_job_id": _active_job_id()},
+        {"device": device, "active_job_id": _active_job_id()},
     )
 
 
@@ -716,8 +717,9 @@ async def devices_run(
 def archive_page(request: Request):
     devices = db.list_devices()
     return templates.TemplateResponse(
+        request,
         "archive.html",
-        {"request": request, "devices": devices, "active_job_id": _active_job_id()},
+        {"devices": devices, "active_job_id": _active_job_id()},
     )
 
 
@@ -744,9 +746,9 @@ def archive_device(request: Request, device_id: int):
     ]
     chart_points.reverse()  # oldest → newest for left-to-right plotting
     return templates.TemplateResponse(
+        request,
         "device_archive.html",
         {
-            "request": request,
             "device": device,
             "runs": runs,
             "active_job_id": _active_job_id(),
@@ -950,9 +952,10 @@ def schedules_page(request: Request, error: str = "", message: str = ""):
             s["days_label"] = ""
         s["month_name"] = calendar.month_name[s["month_of_year"]] if s.get("month_of_year") else ""
     return templates.TemplateResponse(
+        request,
         "schedules.html",
         {
-            "request": request, "schedules": schedules,
+            "schedules": schedules,
             "active_job_id": _active_job_id(),
             "error": error, "message": message,
         },
@@ -1034,6 +1037,7 @@ def _schedule_form_ctx(request: Request, schedule: dict | None, form: dict[str, 
 @app.get("/schedules/new", response_class=HTMLResponse)
 def schedule_new_form(request: Request):
     return templates.TemplateResponse(
+        request,
         "schedule_edit.html",
         _schedule_form_ctx(request, schedule=None),
     )
@@ -1045,6 +1049,7 @@ def schedule_edit_form(request: Request, schedule_id: int):
     if s is None:
         raise HTTPException(status_code=404, detail="Schedule not found.")
     return templates.TemplateResponse(
+        request,
         "schedule_edit.html",
         _schedule_form_ctx(request, schedule=s),
     )
@@ -1057,6 +1062,7 @@ async def schedule_create(request: Request):
     values, err = _parse_schedule_form(form)
     if err:
         return templates.TemplateResponse(
+            request,
             "schedule_edit.html",
             _schedule_form_ctx(request, schedule=None, form=form, error=err),
             status_code=400,
@@ -1073,6 +1079,7 @@ async def schedule_update(schedule_id: int, request: Request):
     if err:
         existing = db.get_schedule(schedule_id)
         return templates.TemplateResponse(
+            request,
             "schedule_edit.html",
             _schedule_form_ctx(request, schedule=existing, form=form, error=err),
             status_code=400,

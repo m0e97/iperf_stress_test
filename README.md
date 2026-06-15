@@ -1,11 +1,11 @@
 # FortiGate Traffic Test Runner
 
-This project contains a Python script, `main.py`, that runs FortiGate `diagnose traffictest` speed tests for multiple spokes from a CSV or Excel file. It discovers the firewall name over SSH, coordinates hub and spoke traffic-test commands, and writes an HTML report.
+This project contains a Python script, `main.py`, that runs FortiGate `diagnose traffictest` speed tests for multiple spokes from a CSV or Excel file. It discovers the firewall name over SSH, coordinates hub and spoke traffic-test commands, and writes HTML, XLSX, and PDF reports.
 
 It is available in three forms:
 
 - **CLI / interactive GUI** — `python main.py ...` (see [Basic Usage](#basic-usage)).
-- **Web app** — FastAPI front-end at `http://localhost:8800` with a persistent device catalog, scheduled runs, FTP-backed result archive, and on-demand HTML / XLSX / PDF rendering (see [Web Application](#web-application)).
+- **Web app** — FastAPI front-end at `http://localhost:8800` with a dashboard, persistent device catalog, scheduled runs, FTP-backed result archive, and on-demand report rendering (see [Web Application](#web-application)).
 - **Docker container** — `docker compose up --build` brings up the web app and the FTP archive together (see [Docker](#docker)).
 
 The web app reuses the CLI engine under the hood — every flag still maps to a form field — and adds a UI layer with devices, schedules, an archive, and a throughput history chart.
@@ -19,7 +19,7 @@ The web app reuses the CLI engine under the hood — every flag still maps to a 
 5. Groups spokes by their hub IP into per-hub queues.
 6. Runs all hub queues **in parallel** — within each queue, spokes are tested one at a time so only one spoke is active against its hub server at any moment.
 7. After all queues finish, stops every hub server.
-8. Captures spoke-side results only and generates an HTML report.
+8. Captures spoke-side results only and generates HTML, XLSX, and PDF reports.
 
 ## Built-In Speed Test Commands
 
@@ -55,7 +55,13 @@ The hub server command is started in the background because `diagnose traffictes
 - SSH must work without interactive prompts during the script run.
 - FortiGate `diagnose traffictest` must be available on the firewalls.
 
-No external Python packages are required unless you use `--paramiko` (which is the default on Windows).
+No external Python packages are required for the core test. Install optional packages for extra output formats:
+
+```bash
+pip install paramiko     # pure-Python SSH (default on Windows)
+pip install openpyxl     # Excel (.xlsx) report output
+pip install reportlab    # PDF report output
+```
 
 ## Input File
 
@@ -106,6 +112,8 @@ Hostname: FW-Riyadh-01
 
 The discovered name is used as the display name in the report. No output from this step appears in the report itself.
 
+The same discovery runs for each hub firewall so the report can label the hub column as **"Hub Name (Hub IP)"** instead of a bare IP.
+
 If your login needs a username, pass it via `--sshuser` or customize the command:
 
 ```bash
@@ -154,6 +162,12 @@ SSH password:
 ```
 
 When running with no arguments, the GUI dialog collects the username and password. The password field is masked.
+
+### Saved Credentials File
+
+The GUI can save credentials to `credentials.json` next to `main.py` so you do not have to retype them on every run. Click **Save credentials** in the dialog to write the file and **Load credentials** to fill the fields from it. Pass `--sshuser` / `--sshpw` on the command line to override the saved file for a single run.
+
+`credentials.json` is listed in `.gitignore` and is never committed.
 
 ## Pure-Python SSH (Paramiko)
 
@@ -308,7 +322,7 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--firewall-name-timeout` | Timeout for firewall name discovery, default `30` seconds |
 | `--delay-seconds` | Delay between spokes within the same hub queue, default `0` seconds |
 | `--timeout` | Timeout for each foreground SSH command |
-| `--output` | HTML report path, default `traffic_test_report.html` |
+| `--output` | Base report path (default: `Reports/traffic_test_report_YYYYMMDD_HHMMSS`) |
 | `--dry-run` | Render commands and report without executing commands |
 
 ## Dry Run
@@ -326,13 +340,38 @@ In dry-run mode, commands are not executed, so firewall names are not discovered
 
 ## Report
 
-The HTML report includes:
+Each test run generates three report files saved to the `Reports/` folder, each with a timestamp in the filename (e.g. `traffic_test_report_20260615_143022`):
 
-- Total, successful, and failed sites.
-- Peak detected throughput across all sites.
-- Per-site: discovered firewall name, IP, hub IP, configured speed, test bandwidth, status badge, peak throughput, retransmissions, duration.
-- Spoke command output, return codes, errors, and durations.
-- Hub setup and server command results (when hub setup is not skipped).
+| Format | File | Requires |
+| --- | --- | --- |
+| HTML | `.html` | built-in |
+| Excel | `.xlsx` | `pip install openpyxl` |
+| PDF | `.pdf` | `pip install reportlab` |
+
+If `openpyxl` or `reportlab` are not installed, the HTML report is still written and the missing-format error message includes the exact `pip install` command for the active Python interpreter.
+
+### Summary table columns
+
+| Column | Description |
+| --- | --- |
+| `#` | Row index |
+| `Site name` | Firewall name discovered over SSH (falls back to spoke IP) |
+| `Speed` | Configured speed from the input file |
+| `IP` | Spoke IP address |
+| `Hub` | Hub firewall name and IP as **"Hub Name (Hub IP)"** |
+| `Generated traffic` | Bandwidth value sent in the traffictest command |
+| `Actual bandwidth` | Peak measured throughput from the spoke-side output |
+| `Started` | Timestamp when this spoke's test began |
+| `Result` | **Pass** or **Fail (not reachable)** / **Fail (insufficient speed)** |
+
+### Pass / Fail logic
+
+A spoke **passes** when its measured throughput is ≥ 95 % of its configured speed. Otherwise it fails with a parenthetical reason:
+
+- **Fail (not reachable)** — no throughput was captured (SSH or traffictest error).
+- **Fail (insufficient speed)** — throughput was captured but fell below the 95 % threshold.
+
+The summary cards at the top of the HTML report are interactive: clicking **Successful sites** or **Failed sites** filters the table to show only that group.
 
 ## Troubleshooting
 
@@ -374,7 +413,7 @@ A FastAPI front-end in [`webapp/`](webapp/) wraps the CLI engine with a browser 
 
 | Mode | Path | When to use |
 | --- | --- | --- |
-| **Quick Run** | `/` | One-off CSV / XLSX upload for an ad-hoc test. |
+| **Quick Run** | `/` (collapsed form) | One-off CSV / XLSX upload for an ad-hoc test. |
 | **Run on selected devices** | `/devices` | Pick from saved devices and start a run immediately. |
 | **Schedule** | `/schedules` | Recurring or one-shot fire at a future date/time. |
 
@@ -384,7 +423,7 @@ All three modes go through the same engine, so the live log, archive, and report
 
 | Path | Purpose |
 | --- | --- |
-| `/` | Quick Run from a CSV / XLSX file |
+| `/` | Dashboard — stat cards (devices, runs, schedules, pass rate) + recent runs table + collapsed Quick Run form |
 | `/devices` | Persistent device catalog (add / edit / delete / import / run on selected) |
 | `/devices/{id}/edit` | Edit one device |
 | `/schedules` | List, toggle, edit, delete, manually fire scheduled runs |
@@ -396,9 +435,37 @@ All three modes go through the same engine, so the live log, archive, and report
 | `/run/{id}/stream`, `/run/{id}/status` | SSE stream and JSON status, used by the run page |
 | `/healthz` | Liveness probe — also reports FTP reachability |
 
+### Dashboard
+
+The home page (`/`) shows four stat cards at a glance:
+
+| Card | What it shows |
+| --- | --- |
+| **Devices** | Total count with passing / failing / untested pills based on each device's most recent run |
+| **Total Runs** | Cumulative run count across all time |
+| **Active Schedules** | Enabled schedules out of the total |
+| **Pass Rate** | Percentage of devices that passed in their last run |
+
+Below the cards, a **Recent Runs** table lists the last 8 runs with status badge, pass and fail counts, and a link to the live log. The **Quick Run** form sits below in a collapsible `<details>` element.
+
 ### Devices catalog
 
-Devices are stored in SQLite at `/data/app.db`. Each row mirrors the CLI input file columns (spoke IP, hub IP, hub mgmt IP, speed, server intf, client intf, traffictest port). Add devices manually from the **Add Device** modal, or bulk-import a CSV / XLSX — existing rows (matched by `spoke_ip + hub_ip`) are updated in place. CSV runs from the Quick Run page also get linked to their matching device by IP, so historic results show up in both flows.
+Devices are stored in SQLite at `/data/app.db`. Each row mirrors the CLI input file columns plus two web-only fields:
+
+| Field | Purpose |
+| --- | --- |
+| `spoke_ip` | Spoke firewall IP (required) |
+| `hub_ip` | Hub IP for traffictest (required) |
+| `hub_mgmt_ip` | Hub SSH management IP |
+| `speed` | Configured link speed (e.g. `100M`) |
+| `accepted_speed` | Pass/fail threshold override. Leave blank to auto-compute as **90 % of `speed`**. Shown as **auto** in the devices table when not set. |
+| `circuit_id`, `isp` | Informational labels shown in the table and device picker |
+| `server_intf`, `client_intf`, `traffictest_port` | Per-device interface / port overrides |
+| `notes` | Free-text notes |
+
+Add devices manually from the **Add Device** modal, or bulk-import a CSV / XLSX — existing rows (matched by `spoke_ip + hub_ip`) are updated in place. CSV runs from the Quick Run page also get linked to their matching device by IP, so historic results show up in both flows.
+
+The devices page includes a live search bar and a multi-select flow (select → run modal). The device picker on the schedule form shows searchable cards with ISP / BW / circuit ID badges.
 
 ### Schedules
 

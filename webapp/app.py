@@ -731,7 +731,11 @@ def archive_device(request: Request, device_id: int):
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found.")
     runs = db.runs_for_device(device_id)
-    target_mbps = engine.parse_speed_to_mbps(device["speed"] or "") if device.get("speed") else None
+    # Use accepted_speed if explicitly set, else fall back to 90% of speed (same as dashboard)
+    target_mbps = engine.parse_speed_to_mbps(device.get("accepted_speed") or "")
+    if target_mbps is None and device.get("speed"):
+        spd = engine.parse_speed_to_mbps(device["speed"] or "")
+        target_mbps = round(spd * 0.90, 2) if spd is not None else None
     chart_points = [
         {
             "run_id": r["id"],

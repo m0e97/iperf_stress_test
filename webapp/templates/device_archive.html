@@ -13,7 +13,7 @@
         <h2 class="chart-title">Throughput Timeline</h2>
         <p class="muted chart-subtitle">
             Measured throughput across {{ chart_points|length }} run{{ '' if chart_points|length == 1 else 's' }}.
-            {% if target_mbps %}Dashed green line marks the {{ '%g'|format(target_mbps) }} Mbps target — green dots passed, red failed.{% else %}No target speed configured; dots are neutral.{% endif %}
+            {% if target_mbps %}Dashed line marks the {{ '%g'|format(target_mbps) }} Mbps threshold ({{ 'accepted speed' if device.accepted_speed else 'auto: 90% of ' ~ device.speed }}) — green dots passed, red failed.{% else %}No speed configured; dots are neutral.{% endif %}
         </p>
         <svg id="throughput-chart" viewBox="0 0 800 280" preserveAspectRatio="none"></svg>
     </div>

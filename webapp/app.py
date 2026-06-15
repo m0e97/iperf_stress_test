@@ -512,6 +512,7 @@ async def device_create(
     hub_ip: str = Form(...),
     hub_mgmt_ip: str = Form(""),
     speed: str = Form(""),
+    accepted_speed: str = Form(""),
     server_intf: str = Form(""),
     client_intf: str = Form(""),
     traffictest_port: str = Form(""),
@@ -522,7 +523,7 @@ async def device_create(
     try:
         db.create_device({
             "name": name, "spoke_ip": spoke_ip, "hub_ip": hub_ip,
-            "hub_mgmt_ip": hub_mgmt_ip, "speed": speed,
+            "hub_mgmt_ip": hub_mgmt_ip, "speed": speed, "accepted_speed": accepted_speed,
             "server_intf": server_intf, "client_intf": client_intf,
             "traffictest_port": traffictest_port,
             "circuit_id": circuit_id, "isp": isp,
@@ -553,6 +554,7 @@ async def device_update(
     hub_ip: str = Form(...),
     hub_mgmt_ip: str = Form(""),
     speed: str = Form(""),
+    accepted_speed: str = Form(""),
     server_intf: str = Form(""),
     client_intf: str = Form(""),
     traffictest_port: str = Form(""),
@@ -562,7 +564,7 @@ async def device_update(
 ):
     db.update_device(device_id, {
         "name": name, "spoke_ip": spoke_ip, "hub_ip": hub_ip,
-        "hub_mgmt_ip": hub_mgmt_ip, "speed": speed,
+        "hub_mgmt_ip": hub_mgmt_ip, "speed": speed, "accepted_speed": accepted_speed,
         "server_intf": server_intf, "client_intf": client_intf,
         "traffictest_port": traffictest_port,
         "circuit_id": circuit_id, "isp": isp,

@@ -74,12 +74,30 @@
             {% if not devices %}
             <p class="muted">No devices configured. <a href="/devices">Add some first</a>.</p>
             {% else %}
-            <div class="grid">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+                <input type="text" id="device-filter" placeholder="Search devices…"
+                       style="flex:1;min-width:180px;max-width:300px;margin:0;"
+                       oninput="filterDeviceCards()" autocomplete="off">
+                <button type="button" class="secondary" style="padding:7px 14px;font-size:0.85em;" onclick="selectAllDevices()">Select all</button>
+                <button type="button" class="secondary" style="padding:7px 14px;font-size:0.85em;" onclick="clearAllDevices()">Clear</button>
+                <span class="muted" id="device-sel-count" style="font-size:0.85em;white-space:nowrap;"></span>
+            </div>
+            <div class="device-picker" id="device-cards">
                 {% for d in devices %}
-                <label class="inline">
-                    <input type="checkbox" name="device_ids" value="{{ d.id }}" {% if d.id in selected_device_ids %}checked{% endif %}>
-                    <code>{{ d.spoke_ip }}</code> → <code>{{ d.hub_ip }}</code>
-                    {% if d.name %}<span class="muted">· {{ d.name }}</span>{% endif %}
+                <label class="device-card" data-search="{{ [d.name or '', d.spoke_ip or '', d.hub_ip or '', d.isp or '', d.circuit_id or ''] | join(' ') | lower }}">
+                    <input type="checkbox" name="device_ids" value="{{ d.id }}" class="device-card-check"
+                           {% if d.id in selected_device_ids %}checked{% endif %} onchange="updateDeviceCount()">
+                    <div class="device-card-body">
+                        <div class="device-card-name">{{ d.name or d.spoke_ip }}</div>
+                        <div class="device-card-ips"><code>{{ d.spoke_ip }}</code> → <code>{{ d.hub_ip }}</code></div>
+                        {% if d.isp or d.speed or d.circuit_id %}
+                        <div class="device-card-meta">
+                            {% if d.isp %}<span class="tag">{{ d.isp }}</span>{% endif %}
+                            {% if d.speed %}<span class="tag">{{ d.speed }}</span>{% endif %}
+                            {% if d.circuit_id %}<span class="tag muted">{{ d.circuit_id }}</span>{% endif %}
+                        </div>
+                        {% endif %}
+                    </div>
                 </label>
                 {% endfor %}
             </div>
@@ -114,6 +132,50 @@
     </form>
 </section>
 
+<style>
+.device-picker {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px;
+    max-height: 420px;
+    overflow-y: auto;
+    padding: 2px;
+}
+.device-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+    background: var(--panel-2);
+    user-select: none;
+}
+.device-card:hover { border-color: var(--accent); background: var(--bg-elevated); }
+.device-card:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+.device-card input[type=checkbox] { margin-top: 3px; flex-shrink: 0; accent-color: var(--accent); }
+.device-card-body { min-width: 0; }
+.device-card-name { font-weight: 600; font-size: 0.9em; color: var(--text-strong); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.device-card-ips { font-size: 0.8em; color: var(--muted); margin-bottom: 4px; }
+.device-card-ips code { font-size: 0.95em; }
+.device-card-meta { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 4px; }
+.tag {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    font-size: 0.75em;
+    color: var(--text);
+}
+.tag.muted { color: var(--muted); }
+</style>
+
 <script>
 (function () {
     const select = document.getElementById("pattern-select");
@@ -128,5 +190,34 @@
     select.addEventListener("change", update);
     update();
 })();
+
+window.updateDeviceCount = function () {
+    const checks = document.querySelectorAll(".device-card-check");
+    const checked = Array.from(checks).filter(c => c.checked).length;
+    const el = document.getElementById("device-sel-count");
+    if (el) el.textContent = checked > 0 ? `${checked} of ${checks.length} selected` : `${checks.length} devices`;
+};
+
+window.filterDeviceCards = function () {
+    const q = (document.getElementById("device-filter")?.value || "").toLowerCase().trim();
+    document.querySelectorAll(".device-card").forEach(card => {
+        const match = !q || (card.dataset.search || "").includes(q);
+        card.style.display = match ? "" : "none";
+    });
+};
+
+window.selectAllDevices = function () {
+    document.querySelectorAll(".device-card-check").forEach(c => {
+        if (c.closest(".device-card")?.style.display !== "none") c.checked = true;
+    });
+    updateDeviceCount();
+};
+
+window.clearAllDevices = function () {
+    document.querySelectorAll(".device-card-check").forEach(c => c.checked = false);
+    updateDeviceCount();
+};
+
+updateDeviceCount();
 </script>
 {% endblock %}

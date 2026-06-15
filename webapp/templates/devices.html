@@ -9,7 +9,7 @@
         </div>
         <div class="toolbar-actions">
             <button type="button" class="secondary" onclick="document.getElementById('add-modal').showModal();">+ Add Device</button>
-            <button type="button" class="secondary" onclick="document.getElementById('import-modal').showModal();">Import CSV / XLSX</button>
+            <button type="button" class="secondary" onclick="document.getElementById('import-modal').showModal();">↑ Import CSV / XLSX</button>
         </div>
     </div>
 
@@ -27,19 +27,27 @@
         </div>
     </div>
     {% else %}
+
+    <!-- Search bar -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
+        <input type="text" id="device-search" placeholder="Search by name, IP, ISP, circuit ID…"
+               style="max-width:340px;margin:0;" oninput="filterDevices()" autocomplete="off">
+        <span class="muted" id="device-count" style="font-size:0.85em;white-space:nowrap;"></span>
+    </div>
+
     <form action="/devices/run" method="post" id="devices-form">
         <div class="table-wrap">
-        <table class="reports">
+        <table class="reports" id="devices-table">
             <thead>
                 <tr>
                     <th style="width:32px;"><input type="checkbox" id="select-all" aria-label="Select all"></th>
                     <th>Name</th>
                     <th>Spoke IP</th>
-                    <th>Hub IP</th>
-                    <th>Hub Mgmt IP</th>
+                    <th>Hub</th>
                     <th>Circuit ID</th>
                     <th>ISP</th>
                     <th>BW</th>
+                    <th>Hub Mgmt IP</th>
                     <th>Server intf</th>
                     <th>Client intf</th>
                     <th>Port</th>
@@ -50,23 +58,25 @@
             </thead>
             <tbody>
                 {% for d in devices %}
-                <tr>
-                    <td><input type="checkbox" name="device_ids" value="{{ d.id }}" class="row-check" aria-label="Select {{ d.spoke_ip }}"></td>
-                    <td>{{ d.name or "—" }}</td>
+                <tr data-search="{{ [d.name or '', d.spoke_ip or '', d.hub_ip or '', d.isp or '', d.circuit_id or ''] | join(' ') | lower }}">
+                    <td><input type="checkbox" name="device_ids" value="{{ d.id }}" class="row-check" aria-label="Select {{ d.name or d.spoke_ip }}"></td>
+                    <td><strong style="color:var(--text-strong);">{{ d.name or "—" }}</strong></td>
                     <td><code>{{ d.spoke_ip }}</code></td>
                     <td><code>{{ d.hub_ip }}</code></td>
-                    <td>{{ d.hub_mgmt_ip or "—" }}</td>
                     <td>{{ d.circuit_id or "—" }}</td>
                     <td>{{ d.isp or "—" }}</td>
-                    <td>{{ d.speed or "—" }}</td>
-                    <td>{{ d.server_intf or "—" }}</td>
-                    <td>{{ d.client_intf or "—" }}</td>
-                    <td>{{ d.traffictest_port or "—" }}</td>
-                    <td>{{ d.last_run or "—" }}</td>
-                    <td>{{ d.run_count }}</td>
+                    <td><strong>{{ d.speed or "—" }}</strong></td>
+                    <td style="color:var(--muted);font-size:0.85em;">{{ d.hub_mgmt_ip or "—" }}</td>
+                    <td style="color:var(--muted);font-size:0.85em;">{{ d.server_intf or "—" }}</td>
+                    <td style="color:var(--muted);font-size:0.85em;">{{ d.client_intf or "—" }}</td>
+                    <td style="color:var(--muted);font-size:0.85em;">{{ d.traffictest_port or "—" }}</td>
+                    <td style="color:var(--muted);font-size:0.82em;white-space:nowrap;">{{ d.last_run or "—" }}</td>
+                    <td style="text-align:center;">{{ d.run_count }}</td>
                     <td style="white-space:nowrap;">
-                        <a href="/devices/{{ d.id }}/edit">edit</a>
-                        <a href="/archive/device/{{ d.id }}">history</a>
+                        <a href="/devices/{{ d.id }}/edit">Edit</a>
+                        <a href="/archive/device/{{ d.id }}">History</a>
+                        <a href="#" class="delete-link" style="color:var(--err);"
+                           onclick="confirmDelete(event, {{ d.id }}, '{{ (d.name or d.spoke_ip) | replace("'", "\\'") }}')">Delete</a>
                     </td>
                 </tr>
                 {% endfor %}
@@ -79,7 +89,7 @@
             <button type="button" onclick="document.getElementById('run-modal').showModal();">Run on selected →</button>
         </div>
 
-        <!-- Run-on-selected modal: hidden run config that posts to /devices/run -->
+        <!-- Run-on-selected modal -->
         <dialog class="modal" id="run-modal">
             <div class="modal-header">
                 <h2>Run on selected devices</h2>
@@ -114,6 +124,25 @@
             </div>
         </dialog>
     </form>
+
+    <!-- Delete confirmation modal (separate from devices-form) -->
+    <dialog class="modal" id="delete-modal">
+        <form id="delete-form" method="post">
+            <div class="modal-header">
+                <h2>Delete device</h2>
+                <button type="button" class="modal-close" onclick="document.getElementById('delete-modal').close();">×</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin:0;">Delete <strong id="delete-device-name"></strong>?
+                Run history for this device will be unlinked. This cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="secondary" onclick="document.getElementById('delete-modal').close();">Cancel</button>
+                <button type="submit" style="background:var(--err);">Delete</button>
+            </div>
+        </form>
+    </dialog>
+
     {% endif %}
 </section>
 
@@ -126,10 +155,10 @@
         </div>
         <div class="modal-body">
             <div class="grid">
-                <label>Name <input type="text" name="name"></label>
-                <label>Spoke IP <input type="text" name="spoke_ip" required></label>
-                <label>Hub IP <input type="text" name="hub_ip" required></label>
-                <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip"></label>
+                <label>Name <input type="text" name="name" placeholder="e.g. FW-Riyadh-01"></label>
+                <label>Spoke IP <input type="text" name="spoke_ip" required placeholder="10.1.1.1"></label>
+                <label>Hub IP <input type="text" name="hub_ip" required placeholder="10.0.0.1"></label>
+                <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip" placeholder="optional"></label>
                 <label>Circuit ID <input type="text" name="circuit_id"></label>
                 <label>ISP <input type="text" name="isp"></label>
                 <label>BW <input type="text" name="speed" placeholder="100M"></label>
@@ -167,19 +196,68 @@
 <script>
 (function () {
     const all = document.getElementById("select-all");
-    const rows = () => document.querySelectorAll("input.row-check");
     const bar = document.getElementById("selection-bar");
-    const count = document.getElementById("selection-count");
-    function refresh() {
-        const checked = document.querySelectorAll("input.row-check:checked");
-        if (count) count.textContent = String(checked.length);
-        if (bar) bar.classList.toggle("visible", checked.length > 0);
+    const countEl = document.getElementById("selection-count");
+    const deviceCountEl = document.getElementById("device-count");
+
+    function visibleRows() {
+        return Array.from(document.querySelectorAll("#devices-table tbody tr"))
+            .filter(r => r.style.display !== "none");
     }
+    function visibleChecks() {
+        return visibleRows().map(r => r.querySelector("input.row-check"));
+    }
+    function allChecks() {
+        return Array.from(document.querySelectorAll("input.row-check"));
+    }
+
+    function refresh() {
+        const checked = allChecks().filter(c => c.checked);
+        if (countEl) countEl.textContent = String(checked.length);
+        if (bar) bar.classList.toggle("visible", checked.length > 0);
+        const vis = visibleChecks();
+        const allVisChecked = vis.length > 0 && vis.every(c => c.checked);
+        if (all) { all.checked = allVisChecked; all.indeterminate = !allVisChecked && vis.some(c => c.checked); }
+    }
+
+    function updateDeviceCount() {
+        if (!deviceCountEl) return;
+        const total = allChecks().length;
+        const visible = visibleRows().length;
+        deviceCountEl.textContent = visible < total
+            ? `Showing ${visible} of ${total} devices`
+            : `${total} device${total !== 1 ? 's' : ''}`;
+    }
+
+    window.filterDevices = function () {
+        const q = (document.getElementById("device-search")?.value || "").toLowerCase().trim();
+        document.querySelectorAll("#devices-table tbody tr").forEach(row => {
+            const match = !q || (row.dataset.search || "").includes(q);
+            row.style.display = match ? "" : "none";
+        });
+        updateDeviceCount();
+        refresh();
+    };
+
     if (all) all.addEventListener("change", e => {
-        rows().forEach(cb => cb.checked = e.target.checked);
+        visibleChecks().forEach(cb => cb.checked = e.target.checked);
         refresh();
     });
-    rows().forEach(cb => cb.addEventListener("change", refresh));
+    allChecks().forEach(cb => cb.addEventListener("change", refresh));
+
+    // Delete modal wiring
+    let pendingDeleteId = null;
+    window.confirmDelete = function (evt, id, name) {
+        evt.preventDefault();
+        pendingDeleteId = id;
+        const nameEl = document.getElementById("delete-device-name");
+        if (nameEl) nameEl.textContent = name;
+        const form = document.getElementById("delete-form");
+        if (form) form.action = `/devices/${id}/delete`;
+        document.getElementById("delete-modal").showModal();
+    };
+
+    updateDeviceCount();
     refresh();
 })();
 </script>

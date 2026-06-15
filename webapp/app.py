@@ -325,6 +325,23 @@ def _new_job(*, source: str, input_name: str, device_ids: list[int] | None = Non
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    stats = db.dashboard_stats()
+
+    device_pass = device_fail = device_untested = 0
+    for d in stats["device_health"]:
+        throughput = d["last_throughput"]
+        if throughput is None:
+            device_untested += 1
+            continue
+        accepted = engine.parse_speed_to_mbps(d.get("accepted_speed") or "")
+        if accepted is None:
+            spd = engine.parse_speed_to_mbps(d.get("speed") or "")
+            accepted = round(spd * 0.90, 2) if spd is not None else None
+        if accepted is None or throughput >= accepted:
+            device_pass += 1
+        else:
+            device_fail += 1
+
     return templates.TemplateResponse(
         "index.html",
         {
@@ -338,6 +355,10 @@ def index(request: Request):
                 "delay_seconds": engine.DEFAULT_DELAY_SECONDS,
             },
             "active_job_id": _active_job_id(),
+            "stats": stats,
+            "device_pass": device_pass,
+            "device_fail": device_fail,
+            "device_untested": device_untested,
         },
     )
 

@@ -47,6 +47,7 @@
                     <th>Circuit ID</th>
                     <th>ISP</th>
                     <th>BW</th>
+                    <th>Accepted Speed</th>
                     <th>Hub Mgmt IP</th>
                     <th>Server intf</th>
                     <th>Client intf</th>
@@ -66,6 +67,15 @@
                     <td>{{ d.circuit_id or "—" }}</td>
                     <td>{{ d.isp or "—" }}</td>
                     <td><strong>{{ d.speed or "—" }}</strong></td>
+                    <td style="font-size:0.9em;">
+                        {% if d.accepted_speed %}
+                            {{ d.accepted_speed }}
+                        {% elif d.speed %}
+                            <span class="muted">auto</span>
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
                     <td style="color:var(--muted);font-size:0.85em;">{{ d.hub_mgmt_ip or "—" }}</td>
                     <td style="color:var(--muted);font-size:0.85em;">{{ d.server_intf or "—" }}</td>
                     <td style="color:var(--muted);font-size:0.85em;">{{ d.client_intf or "—" }}</td>
@@ -162,6 +172,7 @@
                 <label>Circuit ID <input type="text" name="circuit_id"></label>
                 <label>ISP <input type="text" name="isp"></label>
                 <label>BW <input type="text" name="speed" placeholder="100M"></label>
+                <label>Accepted Speed <input type="text" name="accepted_speed" placeholder="auto (90% of BW)"></label>
                 <label>Server intf <input type="text" name="server_intf"></label>
                 <label>Client intf <input type="text" name="client_intf"></label>
                 <label>Traffictest port <input type="text" name="traffictest_port"></label>

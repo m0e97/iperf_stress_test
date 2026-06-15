@@ -1,94 +1,235 @@
 {% extends "base.html" %}
+{% block title %}Dashboard — FortiGate Traffic Test Runner{% endblock %}
 {% block content %}
-<section class="card">
-    <div class="page-toolbar">
-        <div>
-            <h1>Quick Run from CSV / XLSX</h1>
-            <p class="muted" style="margin:0;">One-off run using an ad-hoc file. For repeated tests, save targets in <a href="/devices">Devices</a> instead.</p>
+
+<style>
+.dash-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(195px, 1fr));
+    gap: 14px;
+    margin-bottom: 22px;
+}
+.dash-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+    text-decoration: none;
+    color: inherit;
+    display: block;
+    transition: border-color 0.12s;
+}
+a.dash-card:hover { border-color: var(--accent); }
+.dash-label {
+    font-size: 0.75em;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin-bottom: 8px;
+}
+.dash-value {
+    font-size: 2.4em;
+    font-weight: 700;
+    color: var(--text-strong);
+    line-height: 1;
+    margin-bottom: 10px;
+}
+.dash-value.ok { color: var(--ok); }
+.dash-value.err { color: var(--err); }
+.dash-sub {
+    font-size: 0.82em;
+    color: var(--muted);
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+    min-height: 1.4em;
+}
+.dash-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.9em;
+    font-weight: 500;
+}
+.dash-pill.ok  { background: rgba(34,197,94,0.15);  color: var(--ok); }
+.dash-pill.err { background: rgba(239,68,68,0.15);  color: var(--err); }
+.dash-pill.dim { background: var(--panel-2); color: var(--muted); }
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::marker { display: none; }
+.quick-run-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
+}
+.quick-run-toggle .arrow {
+    font-size: 0.7em;
+    color: var(--muted);
+    transition: transform 0.15s;
+    display: inline-block;
+}
+details[open] .quick-run-toggle .arrow { transform: rotate(90deg); }
+</style>
+
+<h1 style="margin:0 0 20px;color:var(--text-strong);">Dashboard</h1>
+
+<!-- Stat cards -->
+<div class="dash-grid">
+    <a class="dash-card" href="/devices">
+        <div class="dash-label">Devices</div>
+        <div class="dash-value">{{ stats.total_devices }}</div>
+        <div class="dash-sub">
+            {% if stats.total_devices == 0 %}
+                <span>Add devices →</span>
+            {% else %}
+                {% if device_pass > 0 %}<span class="dash-pill ok">{{ device_pass }} passing</span>{% endif %}
+                {% if device_fail > 0 %}<span class="dash-pill err">{{ device_fail }} failing</span>{% endif %}
+                {% if device_untested > 0 %}<span class="dash-pill dim">{{ device_untested }} untested</span>{% endif %}
+            {% endif %}
         </div>
-    </div>
-    {% if active_job_id %}
-    <div class="banner warn">
-        A run is already in progress: <a href="/run/{{ active_job_id }}">job {{ active_job_id }}</a>.
-        Starting a new run will be rejected until that one finishes.
-    </div>
-    {% endif %}
-    <form action="/run" method="post" enctype="multipart/form-data">
-        <fieldset>
-            <legend>Input</legend>
-            <label>
-                Input file (CSV or XLSX)
-                <input type="file" name="input_file" accept=".csv,.xlsx" required>
-            </label>
-        </fieldset>
+    </a>
 
-        <fieldset>
-            <legend>SSH Credentials</legend>
-            <label>
-                SSH username
-                <input type="text" name="sshuser" autocomplete="username" required>
-            </label>
-            <label>
-                SSH password
-                <input type="password" name="sshpw" autocomplete="current-password" required>
-            </label>
-        </fieldset>
+    <a class="dash-card" href="/archive">
+        <div class="dash-label">Total Runs</div>
+        <div class="dash-value">{{ stats.total_runs }}</div>
+        <div class="dash-sub">View history →</div>
+    </a>
 
-        <fieldset>
-            <legend>Overrides (optional)</legend>
-            <div class="grid">
-                <label>
-                    Hub IP (applies to all rows)
-                    <input type="text" name="hub_ip">
-                </label>
-                <label>
-                    Hub management IP
-                    <input type="text" name="hub_mgmt_ip">
-                </label>
-                <label>
-                    Hub server interface
-                    <input type="text" name="hub_server_intf" placeholder="{{ defaults.hub_server_intf }}">
-                </label>
-                <label>
-                    Spoke client interface
-                    <input type="text" name="spoke_client_intf" placeholder="{{ defaults.spoke_client_intf }}">
-                </label>
-                <label>
-                    Traffictest port
-                    <input type="text" name="traffictest_port" placeholder="{{ defaults.traffictest_port }}">
-                </label>
-                <label>
-                    Traffictest duration (s)
-                    <input type="number" name="traffictest_duration" value="{{ defaults.traffictest_duration }}" min="1">
-                </label>
-                <label>
-                    Hub server start delay (s)
-                    <input type="number" step="0.1" name="hub_server_start_delay" value="{{ defaults.hub_server_start_delay }}" min="0">
-                </label>
-                <label>
-                    Delay between spokes per hub (s)
-                    <input type="number" name="delay_seconds" value="{{ defaults.delay_seconds }}" min="0">
-                </label>
-                <label>
-                    Per-command timeout (s, 0 = none)
-                    <input type="number" name="timeout" value="0" min="0">
-                </label>
+    <a class="dash-card" href="/schedules">
+        <div class="dash-label">Active Schedules</div>
+        <div class="dash-value">{{ stats.active_schedules }}<span style="font-size:0.42em;font-weight:400;color:var(--muted);"> / {{ stats.total_schedules }}</span></div>
+        <div class="dash-sub">Manage →</div>
+    </a>
+
+    {% set tested = device_pass + device_fail %}
+    <div class="dash-card">
+        <div class="dash-label">Pass Rate (last run)</div>
+        {% if tested > 0 %}
+        <div class="dash-value {% if device_fail == 0 %}ok{% elif device_pass == 0 %}err{% endif %}">
+            {{ ((device_pass / tested) * 100) | round | int }}%
+        </div>
+        <div class="dash-sub">{{ device_pass }} / {{ tested }} devices</div>
+        {% else %}
+        <div class="dash-value" style="font-size:1.5em;color:var(--muted);">No data</div>
+        <div class="dash-sub">Run a test first</div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Recent Runs -->
+{% if stats.recent_runs %}
+<section class="card" style="margin-bottom:20px;">
+    <div class="page-toolbar" style="margin-bottom:14px;">
+        <h2 style="margin:0;">Recent Runs</h2>
+        <a href="/archive" style="font-size:0.85em;color:var(--muted);">View all →</a>
+    </div>
+    <div class="table-wrap">
+    <table class="reports">
+        <thead>
+            <tr>
+                <th>Run</th>
+                <th>Started</th>
+                <th>Source</th>
+                <th>Status</th>
+                <th style="text-align:center;">Pass</th>
+                <th style="text-align:center;">Fail</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for run in stats.recent_runs %}
+            <tr>
+                <td><code style="font-size:0.82em;color:var(--muted);">{{ run.id[:8] }}</code></td>
+                <td style="white-space:nowrap;color:var(--muted);font-size:0.85em;">{{ (run.started_at or "")[:16] | replace("T"," ") }}</td>
+                <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ run.input_name or run.source or "—" }}</td>
+                <td>
+                    {% if run.status == 'done' %}<span class="badge ok">Done</span>
+                    {% elif run.status == 'running' %}<span class="badge warn">Running</span>
+                    {% elif run.status == 'error' %}<span class="badge err">Error</span>
+                    {% else %}<span class="badge" style="background:var(--panel-2);color:var(--muted);">{{ run.status }}</span>{% endif %}
+                </td>
+                <td style="text-align:center;color:var(--ok);font-weight:600;">
+                    {{ run.summary.successful_sites if run.summary.successful_sites is defined else "—" }}
+                </td>
+                <td style="text-align:center;color:var(--err);font-weight:600;">
+                    {{ run.summary.failed_sites if run.summary.failed_sites is defined else "—" }}
+                </td>
+                <td><a href="/run/{{ run.id }}">View →</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</section>
+{% endif %}
+
+<!-- Quick Run (collapsible) -->
+<section class="card">
+    <details>
+        <summary>
+            <div class="quick-run-toggle">
+                <span class="arrow">▶</span>
+                <span style="font-size:1em;font-weight:600;color:var(--text-strong);">Quick Run from CSV / XLSX</span>
+                <span class="muted" style="font-size:0.83em;">One-off run using an ad-hoc file. For repeated tests, use <a href="/devices" onclick="event.stopPropagation()">Devices</a>.</span>
             </div>
-        </fieldset>
+        </summary>
+        <div style="margin-top:18px;">
+        {% if active_job_id %}
+        <div class="banner warn">
+            A run is already in progress: <a href="/run/{{ active_job_id }}">job {{ active_job_id }}</a>.
+            Starting a new run will be rejected until that one finishes.
+        </div>
+        {% endif %}
+        <form action="/run" method="post" enctype="multipart/form-data">
+            <fieldset>
+                <legend>Input</legend>
+                <label>
+                    Input file (CSV or XLSX)
+                    <input type="file" name="input_file" accept=".csv,.xlsx" required>
+                </label>
+            </fieldset>
 
-        <fieldset>
-            <legend>Mode</legend>
-            <label class="inline">
-                <input type="checkbox" name="skip_hub_setup" value="true">
-                Skip hub setup (hub traffictest server is already running)
-            </label>
-            <label class="inline">
-                <input type="checkbox" name="dry_run" value="true">
-                Dry run (render commands and report without executing)
-            </label>
-        </fieldset>
+            <fieldset>
+                <legend>SSH Credentials</legend>
+                <label>SSH username <input type="text" name="sshuser" autocomplete="username" required></label>
+                <label>SSH password <input type="password" name="sshpw" autocomplete="current-password" required></label>
+            </fieldset>
 
-        <button type="submit">Start Run</button>
-    </form>
+            <fieldset>
+                <legend>Overrides (optional)</legend>
+                <div class="grid">
+                    <label>Hub IP (applies to all rows) <input type="text" name="hub_ip"></label>
+                    <label>Hub management IP <input type="text" name="hub_mgmt_ip"></label>
+                    <label>Hub server interface <input type="text" name="hub_server_intf" placeholder="{{ defaults.hub_server_intf }}"></label>
+                    <label>Spoke client interface <input type="text" name="spoke_client_intf" placeholder="{{ defaults.spoke_client_intf }}"></label>
+                    <label>Traffictest port <input type="text" name="traffictest_port" placeholder="{{ defaults.traffictest_port }}"></label>
+                    <label>Traffictest duration (s) <input type="number" name="traffictest_duration" value="{{ defaults.traffictest_duration }}" min="1"></label>
+                    <label>Hub server start delay (s) <input type="number" step="0.1" name="hub_server_start_delay" value="{{ defaults.hub_server_start_delay }}" min="0"></label>
+                    <label>Delay between spokes per hub (s) <input type="number" name="delay_seconds" value="{{ defaults.delay_seconds }}" min="0"></label>
+                    <label>Per-command timeout (s, 0 = none) <input type="number" name="timeout" value="0" min="0"></label>
+                </div>
+            </fieldset>
+
+            <fieldset>
+                <legend>Mode</legend>
+                <label class="inline">
+                    <input type="checkbox" name="skip_hub_setup" value="true">
+                    Skip hub setup (hub traffictest server is already running)
+                </label>
+                <label class="inline">
+                    <input type="checkbox" name="dry_run" value="true">
+                    Dry run (render commands and report without executing)
+                </label>
+            </fieldset>
+
+            <button type="submit">Start Run</button>
+        </form>
+        </div>
+    </details>
 </section>
 {% endblock %}

@@ -106,6 +106,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN circuit_id TEXT DEFAULT ''")
     if "isp" not in dev_cols:
         conn.execute("ALTER TABLE devices ADD COLUMN isp TEXT DEFAULT ''")
+    if "accepted_speed" not in dev_cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN accepted_speed TEXT DEFAULT ''")
 
 
 @contextmanager
@@ -125,7 +127,7 @@ def _connect() -> Iterator[sqlite3.Connection]:
 # --- Devices --------------------------------------------------------------
 
 DEVICE_COLUMNS = (
-    "name", "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed",
+    "name", "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed", "accepted_speed",
     "server_intf", "client_intf", "traffictest_port",
     "circuit_id", "isp", "notes",
 )
@@ -405,3 +407,45 @@ def runs_for_device(device_id: int) -> list[dict[str, Any]]:
             (device_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def dashboard_stats() -> dict[str, Any]:
+    """Aggregate stats for the home dashboard."""
+    with _connect() as conn:
+        total_devices = conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]
+        total_runs = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        active_schedules = conn.execute("SELECT COUNT(*) FROM schedules WHERE enabled=1").fetchone()[0]
+        total_schedules = conn.execute("SELECT COUNT(*) FROM schedules").fetchone()[0]
+
+        recent_run_rows = conn.execute(
+            """SELECT id, started_at, finished_at, status, exit_code, source, input_name, summary_json
+               FROM runs ORDER BY started_at DESC LIMIT 8"""
+        ).fetchall()
+
+        # Most recent throughput per device for health computation
+        device_health_rows = conn.execute(
+            """SELECT d.id, d.speed, d.accepted_speed,
+                      (SELECT rs.throughput_mbps
+                       FROM run_sites rs JOIN runs r ON r.id = rs.run_id
+                       WHERE rs.device_id = d.id
+                       ORDER BY r.started_at DESC LIMIT 1) AS last_throughput
+               FROM devices d"""
+        ).fetchall()
+
+    recent_runs = []
+    for row in recent_run_rows:
+        r = dict(row)
+        try:
+            r["summary"] = json.loads(r["summary_json"]) if r.get("summary_json") else {}
+        except Exception:
+            r["summary"] = {}
+        recent_runs.append(r)
+
+    return {
+        "total_devices": total_devices,
+        "total_runs": total_runs,
+        "active_schedules": active_schedules,
+        "total_schedules": total_schedules,
+        "recent_runs": recent_runs,
+        "device_health": [dict(r) for r in device_health_rows],
+    }

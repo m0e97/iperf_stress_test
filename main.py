@@ -4,6 +4,7 @@ import argparse
 import csv
 import getpass
 import html
+import json
 import queue
 import re
 import shlex
@@ -2222,6 +2223,7 @@ def _show_inputs_dialog(default_file: str) -> tuple[str, str, str] | None:
         import tkinter as tk
         from tkinter import filedialog
 
+        saved_user, saved_pw = load_credentials()
         result: list[tuple[str, str, str] | None] = [None]
 
         root = tk.Tk()
@@ -2247,22 +2249,33 @@ def _show_inputs_dialog(default_file: str) -> tuple[str, str, str] | None:
         tk.Button(root, text="Browse…", command=browse).grid(row=0, column=2, padx=(0, 10), pady=6)
 
         tk.Label(root, text="SSH username:").grid(row=1, column=0, sticky="w", **pad)
-        user_var = tk.StringVar()
+        user_var = tk.StringVar(value=saved_user)
         tk.Entry(root, textvariable=user_var, width=38).grid(row=1, column=1, columnspan=2, sticky="w", **pad)
 
         tk.Label(root, text="SSH password:").grid(row=2, column=0, sticky="w", **pad)
-        pw_var = tk.StringVar()
+        pw_var = tk.StringVar(value=saved_pw)
         tk.Entry(root, textvariable=pw_var, show="*", width=38).grid(row=2, column=1, columnspan=2, sticky="w", **pad)
 
+        save_var = tk.BooleanVar(value=bool(saved_user or saved_pw))
+        tk.Checkbutton(root, text="Save credentials", variable=save_var).grid(
+            row=3, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 0)
+        )
+
         def on_ok() -> None:
-            result[0] = (file_var.get().strip().strip('"').strip("'"), user_var.get().strip(), pw_var.get())
+            user = user_var.get().strip()
+            pw = pw_var.get()
+            if save_var.get():
+                save_credentials(user, pw)
+            elif _CREDENTIALS_FILE.exists():
+                _CREDENTIALS_FILE.unlink()
+            result[0] = (file_var.get().strip().strip('"').strip("'"), user, pw)
             root.destroy()
 
         def on_cancel() -> None:
             root.destroy()
 
         btn_frame = tk.Frame(root)
-        btn_frame.grid(row=3, column=0, columnspan=3, pady=10)
+        btn_frame.grid(row=4, column=0, columnspan=3, pady=10)
         tk.Button(btn_frame, text="OK", width=10, command=on_ok).pack(side="left", padx=5)
         tk.Button(btn_frame, text="Cancel", width=10, command=on_cancel).pack(side="left", padx=5)
 
@@ -2278,6 +2291,26 @@ def _show_inputs_dialog(default_file: str) -> tuple[str, str, str] | None:
         return result[0]
     except Exception:
         return None
+
+
+_CREDENTIALS_FILE = Path(__file__).parent / "credentials.json"
+
+
+def load_credentials() -> tuple[str, str]:
+    """Return (username, password) from credentials.json, or ('', '') if not found."""
+    try:
+        data = json.loads(_CREDENTIALS_FILE.read_text(encoding="utf-8"))
+        return data.get("username", ""), data.get("password", "")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return "", ""
+
+
+def save_credentials(username: str, password: str) -> None:
+    """Write username and password to credentials.json."""
+    _CREDENTIALS_FILE.write_text(
+        json.dumps({"username": username, "password": password}, indent=2),
+        encoding="utf-8",
+    )
 
 
 def prompt_interactive_inputs(args: argparse.Namespace) -> None:
@@ -2299,15 +2332,27 @@ def prompt_interactive_inputs(args: argparse.Namespace) -> None:
         raw = input(f"Input file path (CSV or XLSX) [{args.input}]: ").strip().strip('"').strip("'")
         if raw:
             args.input = raw
-        username = input("SSH username (leave blank to skip): ").strip()
+        saved_user, saved_pw = load_credentials()
+        username = input(f"SSH username [{saved_user or 'blank to skip'}]: ").strip()
+        if not username and saved_user:
+            username = saved_user
         if username:
             args.sshuser = username
-        password = getpass.getpass("SSH password (leave blank to skip): ")
+        password = getpass.getpass("SSH password (leave blank to use saved): ")
+        if not password and saved_pw:
+            password = saved_pw
         if password:
             args.sshpw = password
 
 
 def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    # Apply saved credentials as defaults when no CLI override is provided.
+    saved_user, saved_pw = load_credentials()
+    if not args.sshuser and saved_user:
+        args.sshuser = saved_user
+    if args.sshpw is None and saved_pw:
+        args.sshpw = saved_pw
+
     input_path = Path(args.input).expanduser().resolve()
     if args.output:
         output_path = Path(args.output).expanduser().resolve()

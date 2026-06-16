@@ -337,13 +337,30 @@ def _active_job_id() -> str | None:
         return ACTIVE_JOB_ID
 
 
+def _serialize_run_for_history(r: dict[str, Any]) -> dict[str, Any]:
+    summary = r.get("summary") or {}
+    return {
+        "id": r["id"],
+        "status": r.get("status") or "",
+        "started_at": r.get("started_at"),
+        "finished_at": r.get("finished_at"),
+        "source": r.get("source") or "",
+        "successful_sites": summary.get("successful_sites"),
+        "failed_sites": summary.get("failed_sites"),
+        "total_sites": summary.get("total_sites"),
+    }
+
+
 @app.get("/jobs/active")
 def active_job():
+    history = [_serialize_run_for_history(r) for r in db.recent_runs(limit=6)]
     aid = _active_job_id()
     if aid is not None:
         job = JOBS.get(aid)
         if job is not None:
             total = job.total_steps or (len(job.device_ids) if job.device_ids else 0)
+            with job.log_lock:
+                tail = job.log_lines[-8:]
             return JSONResponse({
                 "state": "running",
                 "id": job.id,
@@ -352,21 +369,23 @@ def active_job():
                 "total": total,
                 "message": job.current_message,
                 "started_at": job.started_at.isoformat(),
+                "log_tail": tail,
+                "history": [h for h in history if h["id"] != job.id],
             })
-    last = db.latest_run()
-    if last is None:
-        return JSONResponse({"state": "empty"})
-    summary = last.get("summary") or {}
+    if not history:
+        return JSONResponse({"state": "empty", "history": []})
+    last = history[0]
     return JSONResponse({
         "state": "idle",
         "id": last["id"],
-        "status": last.get("status") or "",
-        "finished_at": last.get("finished_at"),
-        "started_at": last.get("started_at"),
-        "source": last.get("source") or "",
-        "successful_sites": summary.get("successful_sites"),
-        "failed_sites": summary.get("failed_sites"),
-        "total_sites": summary.get("total_sites"),
+        "status": last["status"],
+        "finished_at": last["finished_at"],
+        "started_at": last["started_at"],
+        "source": last["source"],
+        "successful_sites": last["successful_sites"],
+        "failed_sites": last["failed_sites"],
+        "total_sites": last["total_sites"],
+        "history": history[1:],
     })
 
 

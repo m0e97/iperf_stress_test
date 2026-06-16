@@ -313,6 +313,25 @@ def latest_run() -> dict[str, Any] | None:
     return r
 
 
+def recent_runs(limit: int = 6) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT id, started_at, finished_at, status, exit_code, source, summary_json
+               FROM runs ORDER BY started_at DESC LIMIT ?""",
+            (int(limit),),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        r = dict(row)
+        try:
+            r["summary"] = json.loads(r["summary_json"]) if r.get("summary_json") else {}
+        except Exception:
+            r["summary"] = {}
+        r.pop("summary_json", None)
+        out.append(r)
+    return out
+
+
 # --- Schedules ------------------------------------------------------------
 
 def list_schedules() -> list[dict[str, Any]]:

@@ -71,6 +71,20 @@
         <div class="run-bar-track"><div class="run-bar-fill indeterminate" id="run-bar-fill"></div></div>
         <span class="run-bar-detail" id="run-bar-detail"></span>
         <a class="run-bar-link" id="run-bar-link" href="#">View run</a>
+        <button type="button" id="run-bar-toggle" class="run-bar-toggle" aria-expanded="false" aria-controls="run-bar-panel" aria-label="Expand">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 15 12 9 18 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+    </div>
+    <div class="run-bar-panel" id="run-bar-panel" hidden>
+        <section class="run-bar-section" id="run-bar-active-section" hidden>
+            <h4>Current run</h4>
+            <div class="run-bar-active-meta" id="run-bar-active-meta"></div>
+            <pre class="run-bar-log" id="run-bar-log"></pre>
+        </section>
+        <section class="run-bar-section" id="run-bar-history-section">
+            <h4>Recent runs</h4>
+            <div class="run-bar-history" id="run-bar-history"></div>
+        </section>
     </div>
 </div>
 
@@ -104,12 +118,87 @@
     const link = document.getElementById("run-bar-link");
     const label = document.getElementById("run-bar-label");
     const pill = document.getElementById("run-bar-pill");
+    const toggle = document.getElementById("run-bar-toggle");
+    const panel = document.getElementById("run-bar-panel");
+    const activeSection = document.getElementById("run-bar-active-section");
+    const activeMeta = document.getElementById("run-bar-active-meta");
+    const logBox = document.getElementById("run-bar-log");
+    const historyBox = document.getElementById("run-bar-history");
     let timer = null;
     let pollMs = 8000;
+    let expanded = false;
+    try { expanded = localStorage.getItem("run-bar-expanded") === "1"; } catch (e) {}
+
+    function applyExpanded() {
+        bar.classList.toggle("expanded", expanded);
+        document.body.classList.toggle("run-bar-expanded", expanded && bar.classList.contains("visible"));
+        panel.hidden = !expanded;
+        toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+        toggle.setAttribute("aria-label", expanded ? "Collapse" : "Expand");
+    }
+    toggle.addEventListener("click", () => {
+        expanded = !expanded;
+        try { localStorage.setItem("run-bar-expanded", expanded ? "1" : "0"); } catch (e) {}
+        applyExpanded();
+    });
 
     function hide() {
         bar.classList.remove("visible", "idle");
-        document.body.classList.remove("has-run-bar");
+        document.body.classList.remove("has-run-bar", "run-bar-expanded");
+    }
+    function fmtTime(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        if (isNaN(d)) return iso;
+        const now = new Date();
+        const diff = (now - d) / 1000;
+        if (diff < 60) return "just now";
+        if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+        if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+        return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    }
+    function statusPillHtml(status) {
+        const s = (status || "").toLowerCase();
+        const cls = s === "done" ? "ok" : (s === "error" ? "err" : "");
+        return '<span class="run-bar-status-pill ' + cls + '">' + (s || "unknown") + '</span>';
+    }
+    function renderHistory(history) {
+        if (!history || !history.length) {
+            historyBox.innerHTML = '<div class="run-bar-history-empty">No previous runs yet.</div>';
+            return;
+        }
+        const rows = history.map(h => {
+            let counts = "";
+            if (typeof h.successful_sites === "number" || typeof h.failed_sites === "number") {
+                counts = (h.successful_sites || 0) + " pass · " + (h.failed_sites || 0) + " fail";
+            } else if (typeof h.total_sites === "number") {
+                counts = h.total_sites + " site(s)";
+            }
+            const when = fmtTime(h.finished_at || h.started_at);
+            return (
+                '<div class="run-bar-history-row">' +
+                  '<code>' + h.id + '</code>' +
+                  statusPillHtml(h.status) +
+                  '<span class="counts">' + counts + '</span>' +
+                  '<span class="when">' + when + '</span>' +
+                  '<a href="/run/' + h.id + '">View</a>' +
+                '</div>'
+            );
+        });
+        historyBox.innerHTML = rows.join("");
+    }
+    function renderActive(j) {
+        activeSection.hidden = false;
+        const meta = [];
+        if (j.source) meta.push('<span class="muted">Source:</span> ' + j.source);
+        if (j.started_at) meta.push('<span class="muted">Started:</span> ' + fmtTime(j.started_at));
+        if (typeof j.total === "number" && j.total > 0) {
+            meta.push('<span class="muted">Progress:</span> ' + (j.current || 0) + ' / ' + j.total);
+        }
+        activeMeta.innerHTML = meta.join(" · ");
+        const tail = j.log_tail || [];
+        logBox.textContent = tail.length ? tail.join("\n") : "Waiting for output…";
+        logBox.scrollTop = logBox.scrollHeight;
     }
     function showRunning(j) {
         bar.classList.add("visible");
@@ -130,17 +219,9 @@
             fill.style.width = "";
         }
         detail.textContent = j.message || "Running…";
-    }
-    function fmtTime(iso) {
-        if (!iso) return "";
-        const d = new Date(iso);
-        if (isNaN(d)) return iso;
-        const now = new Date();
-        const diff = (now - d) / 1000;
-        if (diff < 60) return "just now";
-        if (diff < 3600) return Math.floor(diff / 60) + "m ago";
-        if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
-        return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        renderActive(j);
+        renderHistory(j.history || []);
+        applyExpanded();
     }
     function showIdle(j) {
         bar.classList.add("visible", "idle");
@@ -163,6 +244,9 @@
         detail.textContent = parts.join(" · ");
         link.href = "/run/" + j.id;
         link.textContent = "View";
+        activeSection.hidden = true;
+        renderHistory(j.history || []);
+        applyExpanded();
     }
     async function tick() {
         try {
@@ -181,7 +265,6 @@
             }
             schedule();
         } catch (e) {
-            // network blip — keep current state
             schedule();
         }
     }

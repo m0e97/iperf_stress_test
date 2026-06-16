@@ -100,13 +100,13 @@ body {
 .brand-mark {
     display: inline-grid;
     place-items: center;
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     flex-shrink: 0;
 }
 .brand-logo {
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     object-fit: contain;
 }
 /* show white logo on dark, red logo on light */
@@ -117,7 +117,7 @@ body {
 /* default (no attribute yet) matches dark */
 :root:not([data-theme]) .brand-logo-light { display: none; }
 :root:not([data-theme]) .brand-logo-dark  { display: block; }
-.brand-text { font-weight: 600; }
+.brand-text { font-weight: 600; font-size: 0.95em; line-height: 1; }
 
 .side-nav {
     display: flex;

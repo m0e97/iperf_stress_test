@@ -5,6 +5,7 @@ import calendar
 import csv
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -66,11 +67,29 @@ class JobState:
     captured_templates: list[str] = field(default_factory=list)
     captured_delay: int = 0
     device_ids: list[int] = field(default_factory=list)
+    # Progress tracking — parsed from engine log markers like "[3/12] Running site '...'"
+    current_step: int = 0
+    total_steps: int = 0
+    current_message: str = ""
 
     def append_line(self, line: str) -> None:
         with self.log_lock:
             self.log_lines.append(line)
+            self._update_progress_locked(line)
         self.new_line_event.set()
+
+    def _update_progress_locked(self, line: str) -> None:
+        m = _PROGRESS_RE.match(line)
+        if not m:
+            return
+        try:
+            cur = int(m.group(1))
+            total = int(m.group(2))
+        except ValueError:
+            return
+        self.current_step = cur
+        self.total_steps = total
+        self.current_message = m.group(3).strip()
 
     def snapshot_from(self, offset: int) -> list[str]:
         with self.log_lock:
@@ -80,6 +99,8 @@ class JobState:
 JOBS: dict[str, JobState] = {}
 JOBS_LOCK = threading.RLock()
 ACTIVE_JOB_ID: str | None = None
+
+_PROGRESS_RE = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)$")
 
 
 class _QueueTee:
@@ -314,6 +335,25 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")
 def _active_job_id() -> str | None:
     with JOBS_LOCK:
         return ACTIVE_JOB_ID
+
+
+@app.get("/jobs/active")
+def active_job():
+    aid = _active_job_id()
+    if aid is None:
+        return JSONResponse({"id": None})
+    job = JOBS.get(aid)
+    if job is None:
+        return JSONResponse({"id": None})
+    total = job.total_steps or (len(job.device_ids) if job.device_ids else 0)
+    return JSONResponse({
+        "id": job.id,
+        "status": job.status,
+        "current": job.current_step,
+        "total": total,
+        "message": job.current_message,
+        "started_at": job.started_at.isoformat(),
+    })
 
 
 def _check_active() -> None:

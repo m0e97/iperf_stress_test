@@ -26,26 +26,31 @@
     </a>
     <nav class="side-nav">
         <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>
-            <span class="nav-icon">⌂</span> Dashboard
+            <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><path d="M3 12 12 3l9 9"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>
+            </span>
+            Dashboard
         </a>
         <a href="/devices" {% if path.startswith('/devices') %}aria-current="page"{% endif %}>
-            <span class="nav-icon">◇</span> Devices
+            <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01"/><path d="M7 16.5h.01"/><path d="M11 7.5h6"/><path d="M11 16.5h6"/></svg>
+            </span>
+            Devices
         </a>
         <a href="/archive" {% if path.startswith('/archive') %}aria-current="page"{% endif %}>
-            <span class="nav-icon">▤</span> Archive
+            <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/></svg>
+            </span>
+            Archive
         </a>
         <a href="/schedules" {% if path.startswith('/schedules') %}aria-current="page"{% endif %}>
-            <span class="nav-icon">⏱</span> Schedules
+            <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 3v4"/><path d="M16 3v4"/><circle cx="12" cy="15.5" r="2.25"/><path d="M12 14v1.5l1 .8"/></svg>
+            </span>
+            Schedules
         </a>
     </nav>
-    <div class="sidebar-footer">
-        {% if active_job_id %}
-        <a class="sidebar-status" href="/run/{{ active_job_id }}">
-            <span class="status-dot"></span>
-            <span>Run in progress · <code style="background:transparent;padding:0;color:inherit;">{{ active_job_id }}</code></span>
-        </a>
-        {% endif %}
-    </div>
+    <div class="sidebar-footer"></div>
 </aside>
 
 <button id="theme-toggle" class="theme-toggle-icon" type="button" aria-label="Toggle theme" title="Toggle theme">
@@ -55,6 +60,17 @@
 <main class="main-area">
     {% block content %}{% endblock %}
 </main>
+
+<div id="run-bar" class="run-bar" role="status" aria-live="polite">
+    <div class="run-bar-row">
+        <span class="run-bar-dot" aria-hidden="true"></span>
+        <span class="run-bar-label">Run in progress</span>
+        <span class="run-bar-count" id="run-bar-count"></span>
+        <div class="run-bar-track"><div class="run-bar-fill indeterminate" id="run-bar-fill"></div></div>
+        <span class="run-bar-detail" id="run-bar-detail"></span>
+        <a class="run-bar-link" id="run-bar-link" href="#">View run</a>
+    </div>
+</div>
 
 <script>
 (function () {
@@ -74,6 +90,65 @@
         apply(next);
         document.dispatchEvent(new CustomEvent("themechange", { detail: next }));
     });
+})();
+</script>
+
+<script>
+(function () {
+    const bar = document.getElementById("run-bar");
+    const fill = document.getElementById("run-bar-fill");
+    const count = document.getElementById("run-bar-count");
+    const detail = document.getElementById("run-bar-detail");
+    const link = document.getElementById("run-bar-link");
+    let lastJobId = null;
+    let timer = null;
+
+    function hide() {
+        bar.classList.remove("visible");
+        document.body.classList.remove("has-run-bar");
+    }
+    function show(job) {
+        bar.classList.add("visible");
+        document.body.classList.add("has-run-bar");
+        link.href = "/run/" + job.id;
+        if (typeof job.total === "number" && job.total > 0) {
+            const cur = Math.min(job.current || 0, job.total);
+            count.textContent = cur + " / " + job.total;
+            fill.classList.remove("indeterminate");
+            fill.style.width = Math.round((cur / job.total) * 100) + "%";
+        } else {
+            count.textContent = "";
+            fill.classList.add("indeterminate");
+            fill.style.width = "";
+        }
+        detail.textContent = job.message || "Running…";
+    }
+    async function tick() {
+        try {
+            const r = await fetch("/jobs/active", { cache: "no-store" });
+            if (!r.ok) { hide(); return; }
+            const j = await r.json();
+            if (!j || !j.id || (j.status !== "running" && j.status !== "pending")) {
+                hide();
+                lastJobId = null;
+                return;
+            }
+            lastJobId = j.id;
+            show(j);
+        } catch (e) {
+            // network blip — keep current state
+        }
+    }
+    function start() {
+        if (timer) return;
+        tick();
+        timer = setInterval(tick, 2000);
+    }
+    document.addEventListener("visibilitychange", () => {
+        if (document.hidden) { clearInterval(timer); timer = null; }
+        else { start(); }
+    });
+    start();
 })();
 </script>
 </body>

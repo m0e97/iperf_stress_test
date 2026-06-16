@@ -297,6 +297,22 @@ def get_run(run_id: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def latest_run() -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT id, started_at, finished_at, status, exit_code, source, summary_json
+               FROM runs ORDER BY started_at DESC LIMIT 1"""
+        ).fetchone()
+    if not row:
+        return None
+    r = dict(row)
+    try:
+        r["summary"] = json.loads(r["summary_json"]) if r.get("summary_json") else {}
+    except Exception:
+        r["summary"] = {}
+    return r
+
+
 # --- Schedules ------------------------------------------------------------
 
 def list_schedules() -> list[dict[str, Any]]:

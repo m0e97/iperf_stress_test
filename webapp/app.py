@@ -340,19 +340,33 @@ def _active_job_id() -> str | None:
 @app.get("/jobs/active")
 def active_job():
     aid = _active_job_id()
-    if aid is None:
-        return JSONResponse({"id": None})
-    job = JOBS.get(aid)
-    if job is None:
-        return JSONResponse({"id": None})
-    total = job.total_steps or (len(job.device_ids) if job.device_ids else 0)
+    if aid is not None:
+        job = JOBS.get(aid)
+        if job is not None:
+            total = job.total_steps or (len(job.device_ids) if job.device_ids else 0)
+            return JSONResponse({
+                "state": "running",
+                "id": job.id,
+                "status": job.status,
+                "current": job.current_step,
+                "total": total,
+                "message": job.current_message,
+                "started_at": job.started_at.isoformat(),
+            })
+    last = db.latest_run()
+    if last is None:
+        return JSONResponse({"state": "empty"})
+    summary = last.get("summary") or {}
     return JSONResponse({
-        "id": job.id,
-        "status": job.status,
-        "current": job.current_step,
-        "total": total,
-        "message": job.current_message,
-        "started_at": job.started_at.isoformat(),
+        "state": "idle",
+        "id": last["id"],
+        "status": last.get("status") or "",
+        "finished_at": last.get("finished_at"),
+        "started_at": last.get("started_at"),
+        "source": last.get("source") or "",
+        "successful_sites": summary.get("successful_sites"),
+        "failed_sites": summary.get("failed_sites"),
+        "total_sites": summary.get("total_sites"),
     })
 
 

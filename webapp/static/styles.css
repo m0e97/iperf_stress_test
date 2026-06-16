@@ -100,23 +100,17 @@ body {
 .brand-mark {
     display: inline-grid;
     place-items: center;
-    width: 36px;
-    height: 36px;
+    width: 30px;
+    height: 21px;
     flex-shrink: 0;
+    color: #DA291C;
 }
+:root[data-theme="dark"] .brand-mark { color: #ffffff; }
 .brand-logo {
-    width: 36px;
-    height: 36px;
-    object-fit: contain;
+    width: 100%;
+    height: 100%;
+    display: block;
 }
-/* show white logo on dark, red logo on light */
-:root[data-theme="dark"]  .brand-logo-light { display: none; }
-:root[data-theme="dark"]  .brand-logo-dark  { display: block; }
-:root[data-theme="light"] .brand-logo-dark  { display: none; }
-:root[data-theme="light"] .brand-logo-light { display: block; }
-/* default (no attribute yet) matches dark */
-:root:not([data-theme]) .brand-logo-light { display: none; }
-:root:not([data-theme]) .brand-logo-dark  { display: block; }
 .brand-text { font-weight: 600; font-size: 1.05em; line-height: 1; letter-spacing: -0.01em; }
 
 .side-nav {
@@ -504,6 +498,21 @@ input.invalid, select.invalid, textarea.invalid { border-color: var(--err); }
     display: none;
 }
 .run-bar.visible { display: block; }
+.run-bar.idle .run-bar-dot { background: var(--muted); animation: none; box-shadow: none; }
+.run-bar.idle .run-bar-track { display: none; }
+.run-bar.idle .run-bar-count { display: none; }
+.run-bar-status-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 0.82em;
+    font-weight: 500;
+    background: var(--panel-2);
+    color: var(--text);
+}
+.run-bar-status-pill.ok { background: rgba(34, 197, 94, 0.15); color: var(--ok); }
+.run-bar-status-pill.err { background: rgba(239, 68, 68, 0.15); color: var(--err); }
 .run-bar-row {
     display: flex;
     align-items: center;

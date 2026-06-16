@@ -18,9 +18,10 @@
 {% set path = request.url.path %}
 <aside class="sidebar">
     <a class="brand" href="/">
-        <span class="brand-mark">
-            <img class="brand-logo brand-logo-dark"  src="/static/icons/Fortinet-logomark-rgb-white.svg" alt="Fortinet">
-            <img class="brand-logo brand-logo-light" src="/static/icons/Fortinet-logomark-rgb-red.svg"   alt="Fortinet">
+        <span class="brand-mark" aria-label="Fortinet">
+            <svg class="brand-logo" viewBox="53 53 77 54" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path fill="currentColor" d="M129.7,73.1v13.8h0h-21.5V73.1l0,0H129.7L129.7,73.1L129.7,73.1z M80.8,106.6L80.8,106.6l21.5,0v0V92.8H80.8 V106.6z M129.7,64.9c0-6.4-5.2-11.6-11.6-11.6l-9.9,0v13.8h21.5V64.9z M80.8,53.3v13.8l0,0h21.5l0,0V53.3v0L80.8,53.3L80.8,53.3z M53.3,73.1L53.3,73.1v13.8l0,0h21.5V73.1l0,0H53.3L53.3,73.1z M108.2,106.6l9.9,0c6.4,0,11.6-5.2,11.6-11.6v-2.2h-21.5V106.6z M53.3,95c0,6.4,5.2,11.6,11.6,11.6l9.9,0V92.8H53.3V95z M53.3,64.9v2.2h21.5V53.3l-9.9,0C58.5,53.3,53.3,58.5,53.3,64.9z"/>
+            </svg>
         </span>
         <span class="brand-text">SD-WAN iPerf</span>
     </a>
@@ -64,7 +65,8 @@
 <div id="run-bar" class="run-bar" role="status" aria-live="polite">
     <div class="run-bar-row">
         <span class="run-bar-dot" aria-hidden="true"></span>
-        <span class="run-bar-label">Run in progress</span>
+        <span class="run-bar-label" id="run-bar-label">Run in progress</span>
+        <span class="run-bar-status-pill" id="run-bar-pill" hidden></span>
         <span class="run-bar-count" id="run-bar-count"></span>
         <div class="run-bar-track"><div class="run-bar-fill indeterminate" id="run-bar-fill"></div></div>
         <span class="run-bar-detail" id="run-bar-detail"></span>
@@ -100,52 +102,99 @@
     const count = document.getElementById("run-bar-count");
     const detail = document.getElementById("run-bar-detail");
     const link = document.getElementById("run-bar-link");
-    let lastJobId = null;
+    const label = document.getElementById("run-bar-label");
+    const pill = document.getElementById("run-bar-pill");
     let timer = null;
+    let pollMs = 8000;
 
     function hide() {
-        bar.classList.remove("visible");
+        bar.classList.remove("visible", "idle");
         document.body.classList.remove("has-run-bar");
     }
-    function show(job) {
+    function showRunning(j) {
         bar.classList.add("visible");
+        bar.classList.remove("idle");
         document.body.classList.add("has-run-bar");
-        link.href = "/run/" + job.id;
-        if (typeof job.total === "number" && job.total > 0) {
-            const cur = Math.min(job.current || 0, job.total);
-            count.textContent = cur + " / " + job.total;
+        label.textContent = "Run in progress";
+        pill.hidden = true;
+        link.href = "/run/" + j.id;
+        link.textContent = "View run";
+        if (typeof j.total === "number" && j.total > 0) {
+            const cur = Math.min(j.current || 0, j.total);
+            count.textContent = cur + " / " + j.total;
             fill.classList.remove("indeterminate");
-            fill.style.width = Math.round((cur / job.total) * 100) + "%";
+            fill.style.width = Math.round((cur / j.total) * 100) + "%";
         } else {
             count.textContent = "";
             fill.classList.add("indeterminate");
             fill.style.width = "";
         }
-        detail.textContent = job.message || "Running…";
+        detail.textContent = j.message || "Running…";
+    }
+    function fmtTime(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        if (isNaN(d)) return iso;
+        const now = new Date();
+        const diff = (now - d) / 1000;
+        if (diff < 60) return "just now";
+        if (diff < 3600) return Math.floor(diff / 60) + "m ago";
+        if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
+        return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    }
+    function showIdle(j) {
+        bar.classList.add("visible", "idle");
+        document.body.classList.add("has-run-bar");
+        label.textContent = "Last run";
+        const status = (j.status || "").toLowerCase();
+        pill.hidden = false;
+        pill.textContent = status || "unknown";
+        pill.classList.remove("ok", "err");
+        if (status === "done") pill.classList.add("ok");
+        else if (status === "error") pill.classList.add("err");
+        const parts = [];
+        if (typeof j.successful_sites === "number" || typeof j.failed_sites === "number") {
+            const ok = j.successful_sites || 0;
+            const fail = j.failed_sites || 0;
+            parts.push(ok + " pass · " + fail + " fail");
+        }
+        const when = fmtTime(j.finished_at || j.started_at);
+        if (when) parts.push(when);
+        detail.textContent = parts.join(" · ");
+        link.href = "/run/" + j.id;
+        link.textContent = "View";
     }
     async function tick() {
         try {
             const r = await fetch("/jobs/active", { cache: "no-store" });
             if (!r.ok) { hide(); return; }
             const j = await r.json();
-            if (!j || !j.id || (j.status !== "running" && j.status !== "pending")) {
+            if (j.state === "running") {
+                pollMs = 2000;
+                showRunning(j);
+            } else if (j.state === "idle") {
+                pollMs = 15000;
+                showIdle(j);
+            } else {
+                pollMs = 15000;
                 hide();
-                lastJobId = null;
-                return;
             }
-            lastJobId = j.id;
-            show(j);
+            schedule();
         } catch (e) {
             // network blip — keep current state
+            schedule();
         }
     }
+    function schedule() {
+        clearTimeout(timer);
+        timer = setTimeout(tick, pollMs);
+    }
     function start() {
-        if (timer) return;
+        clearTimeout(timer);
         tick();
-        timer = setInterval(tick, 2000);
     }
     document.addEventListener("visibilitychange", () => {
-        if (document.hidden) { clearInterval(timer); timer = null; }
+        if (document.hidden) { clearTimeout(timer); timer = null; }
         else { start(); }
     });
     start();

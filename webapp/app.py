@@ -274,6 +274,20 @@ def _run_job(
                         row["device_id"] = id_by_spoke_hub[key]
             db.insert_run_sites(job.id, site_rows)
 
+            # Auto-update device name when test discovers a real hostname
+            for row in site_rows:
+                dname = row.get("display_name") or ""
+                spoke = row.get("spoke_ip") or ""
+                if not dname or dname == spoke:
+                    continue  # no real hostname discovered
+                did = row.get("device_id")
+                if did is None:
+                    matched = db.find_device_by_spoke_hub(spoke, row.get("hub_ip") or "")
+                    if matched:
+                        did = matched["id"]
+                if did:
+                    db.update_device_name_if_unset(did, dname, spoke)
+
         db.finalize_run(
             run_id=job.id,
             status=job.status,

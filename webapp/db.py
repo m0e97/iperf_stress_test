@@ -394,6 +394,15 @@ def mark_schedule_fired(
         )
 
 
+def update_device_name_if_unset(device_id: int, discovered_name: str, spoke_ip: str) -> None:
+    """Set device name to discovered hostname only when name is blank or is the spoke IP fallback."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE devices SET name = ? WHERE id = ? AND (name = '' OR name = ?)",
+            (discovered_name, device_id, spoke_ip),
+        )
+
+
 def runs_for_device(device_id: int) -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(

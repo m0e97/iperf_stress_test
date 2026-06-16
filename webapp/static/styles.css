@@ -102,13 +102,21 @@ body {
     place-items: center;
     width: 32px;
     height: 32px;
-    border-radius: 8px;
-    background: var(--accent);
-    color: white;
-    font-weight: 700;
-    font-size: 0.85em;
-    letter-spacing: 0.5px;
+    flex-shrink: 0;
 }
+.brand-logo {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+}
+/* show white logo on dark, red logo on light */
+:root[data-theme="dark"]  .brand-logo-light { display: none; }
+:root[data-theme="dark"]  .brand-logo-dark  { display: block; }
+:root[data-theme="light"] .brand-logo-dark  { display: none; }
+:root[data-theme="light"] .brand-logo-light { display: block; }
+/* default (no attribute yet) matches dark */
+:root:not([data-theme]) .brand-logo-light { display: none; }
+:root:not([data-theme]) .brand-logo-dark  { display: block; }
 .brand-text { font-weight: 600; }
 
 .side-nav {

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}FortiGate Traffic Test Runner{% endblock %}</title>
+    <title>{% block title %}SD-WAN iPerf{% endblock %}</title>
     <link rel="stylesheet" href="/static/styles.css">
     <script>
         (function () {
@@ -18,8 +18,11 @@
 {% set path = request.url.path %}
 <aside class="sidebar">
     <a class="brand" href="/">
-        <span class="brand-mark">FT</span>
-        <span class="brand-text">Traffic Test</span>
+        <span class="brand-mark">
+            <img class="brand-logo brand-logo-dark"  src="/static/icons/Fortinet-logomark-rgb-white.svg" alt="Fortinet">
+            <img class="brand-logo brand-logo-light" src="/static/icons/Fortinet-logomark-rgb-red.svg"   alt="Fortinet">
+        </span>
+        <span class="brand-text">SD-WAN iPerf</span>
     </a>
     <nav class="side-nav">
         <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>

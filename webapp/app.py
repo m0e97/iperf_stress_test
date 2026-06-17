@@ -267,9 +267,9 @@ def _run_job(
                 archive_name = f"{job.id}.json"
                 ftp_archive.push_bytes(archive_name, json.dumps(payload).encode("utf-8"))
                 job.archive_filename = archive_name
-                job.append_line(f"Archive uploaded to FTP: {archive_name}")
+                job.append_line(f"Archive saved: {archive_name}")
             except Exception as exc:  # noqa: BLE001
-                job.append_line(f"WARNING: FTP archive upload failed: {exc}")
+                job.append_line(f"WARNING: Archive save failed: {exc}")
 
             # Build run_sites rows from the captured runs.
             site_rows = []
@@ -864,7 +864,7 @@ def archive_render(run_id: str, fmt: str):
     try:
         raw = ftp_archive.fetch_bytes(run["archive_filename"])
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to fetch archive from FTP: {exc}")
+        raise HTTPException(status_code=502, detail=f"Failed to read archive: {exc}")
     payload = json.loads(raw.decode("utf-8"))
     runs_objs, summary, templates_list, delay = serialize.deserialize_runs(payload)
     input_path = Path(payload.get("input_name", "input.csv"))
@@ -1226,8 +1226,8 @@ def schedule_run_now(schedule_id: int):
 
 @app.get("/healthz")
 def healthz():
-    ftp_ok, ftp_detail = ftp_archive.ping()
-    return {"ok": True, "ftp": {"ok": ftp_ok, "detail": ftp_detail}}
+    storage_ok, storage_detail = ftp_archive.ping()
+    return {"ok": True, "storage": {"ok": storage_ok, "detail": storage_detail}}
 
 
 # --- Startup --------------------------------------------------------------

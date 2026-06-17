@@ -100,7 +100,7 @@ JOBS: dict[str, JobState] = {}
 JOBS_LOCK = threading.RLock()
 ACTIVE_JOB_ID: str | None = None
 
-_PROGRESS_RE = re.compile(r"^\[(\d+)/(\d+)\]\s*(.*)$")
+_PROGRESS_RE = re.compile(r"\[(\d+)/(\d+)\]\s*(.*)$")
 
 
 class _QueueTee:

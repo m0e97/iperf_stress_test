@@ -29,10 +29,10 @@
 
     <pre id="log" class="log"></pre>
 
-    <div id="results" class="results" hidden>
-        <h2>Reports</h2>
-        <ul id="report-list"></ul>
-        <p>
+    <div id="results" hidden style="margin-top:18px;">
+        <h2 style="margin:0 0 12px;">Download Reports</h2>
+        <div id="report-list" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;"></div>
+        <p class="muted" style="margin:0;">
             <a href="/">Start another run</a>
             {% if job.source == "devices" %} · <a href="/devices">Back to devices</a>{% endif %}
         </p>
@@ -57,19 +57,21 @@
         fetch(`/run/${jobId}/status`).then(r => r.json()).then(data => {
             statusEl.textContent = data.status + (data.exit_code !== null ? ` (exit ${data.exit_code})` : "");
             statusEl.classList.add(data.status === "done" && data.exit_code === 0 ? "ok" : "err");
+            reportListEl.innerHTML = "";
             if (data.reports && data.reports.length) {
-                reportListEl.innerHTML = "";
                 for (const r of data.reports) {
-                    const li = document.createElement("li");
                     const a = document.createElement("a");
                     a.href = r.url;
-                    a.textContent = `${r.label} report`;
+                    a.textContent = `↓ ${r.label}`;
                     a.target = r.label === "HTML" ? "_blank" : "_self";
-                    li.appendChild(a);
-                    reportListEl.appendChild(li);
+                    a.className = "button";
+                    a.style.cssText = "display:inline-flex;align-items:center;gap:6px;padding:9px 18px;border-radius:6px;text-decoration:none;font-weight:500;font-size:0.95em;";
+                    reportListEl.appendChild(a);
                 }
-                resultsEl.hidden = false;
+            } else {
+                reportListEl.innerHTML = '<span class="muted">No report archive available for this run.</span>';
             }
+            resultsEl.hidden = false;
         });
     });
 })();

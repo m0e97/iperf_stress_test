@@ -69,6 +69,7 @@ class JobState:
     captured_templates: list[str] = field(default_factory=list)
     captured_delay: int = 0
     device_ids: list[int] = field(default_factory=list)
+    schedule_name: str = ""
     # Progress tracking — parsed from engine log markers like "[3/12] Running site '...'"
     current_step: int = 0
     total_steps: int = 0
@@ -222,6 +223,7 @@ def _run_job(
         source=job.source,
         input_name=job.input_name,
         settings=settings,
+        schedule_name=job.schedule_name,
     )
     db.update_run_status(job.id, "running")
 
@@ -399,12 +401,15 @@ def _check_active() -> None:
             raise HTTPException(status_code=409, detail=f"A run is already in progress (job {aid}).")
 
 
-def _new_job(*, source: str, input_name: str, device_ids: list[int] | None = None) -> JobState:
+def _new_job(*, source: str, input_name: str, device_ids: list[int] | None = None, schedule_name: str = "") -> JobState:
     global ACTIVE_JOB_ID
     with JOBS_LOCK:
         _check_active()
         job_id = datetime.now(RIYADH_TZ).strftime("%Y%m%d-%H%M%S")
-        job = JobState(id=job_id, source=source, input_name=input_name, device_ids=list(device_ids or []))
+        job = JobState(
+            id=job_id, source=source, input_name=input_name,
+            device_ids=list(device_ids or []), schedule_name=schedule_name,
+        )
         JOBS[job_id] = job
         ACTIVE_JOB_ID = job_id
     return job
@@ -761,6 +766,7 @@ def _start_run_for_devices(
     sshuser: str,
     sshpw: str,
     overrides: dict[str, Any],
+    schedule_name: str = "",
 ) -> tuple[bool, str, str | None]:
     """Shared entry used by HTTP devices_run and the scheduler. Returns (ok, message, run_id)."""
     if not device_ids:
@@ -771,7 +777,10 @@ def _start_run_for_devices(
             return False, f"A run is already in progress (job {active.id}).", None
 
     try:
-        job = _new_job(source="devices", input_name=f"{len(device_ids)} device(s)", device_ids=device_ids)
+        job = _new_job(
+            source="devices", input_name=f"{len(device_ids)} device(s)",
+            device_ids=device_ids, schedule_name=schedule_name,
+        )
     except HTTPException as exc:
         return False, str(exc.detail), None
 
@@ -905,6 +914,26 @@ def archive_device(request: Request, device_id: int):
     )
 
 
+_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _slug_for_filename(value: str) -> str:
+    cleaned = _FILENAME_SAFE_RE.sub("_", value or "").strip("_")
+    return cleaned[:60]
+
+
+def _report_filename_base(run: dict[str, Any]) -> str:
+    started = run.get("started_at") or ""
+    stamp = started.replace("T", "_").replace(":", "").replace("-", "")[:15]
+    if not stamp:
+        stamp = run.get("id") or "run"
+    base = f"Report_{stamp}"
+    schedule_slug = _slug_for_filename(run.get("schedule_name") or "")
+    if schedule_slug:
+        base = f"{schedule_slug}_{base}"
+    return base
+
+
 @app.get("/archive/run/{run_id}/render/{fmt}")
 def archive_render(run_id: str, fmt: str):
     fmt = fmt.lower()
@@ -923,7 +952,7 @@ def archive_render(run_id: str, fmt: str):
     runs_objs, summary, templates_list, delay = serialize.deserialize_runs(payload)
     input_path = Path(payload.get("input_name", "input.csv"))
 
-    download_base = f"traffic_test_report_{run_id}"
+    download_base = _report_filename_base(run)
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         if fmt == "html":
@@ -1270,6 +1299,7 @@ def schedule_run_now(schedule_id: int):
         raise HTTPException(status_code=400, detail=f"Invalid schedule payload: {exc}")
     ok, message, run_id = _start_run_for_devices(
         device_ids=device_ids, sshuser=s["sshuser"], sshpw=s["sshpw"], overrides=overrides,
+        schedule_name=s["name"],
     )
     if not ok:
         raise HTTPException(status_code=409 if "in progress" in message.lower() else 400, detail=message)

@@ -503,6 +503,8 @@ A background poller (every 30 s) queries the schedules table for rows with `next
 
 Per-device history (with the throughput timeline chart) is still reachable at `/archive/device/{id}` — the **History** column on the Devices page links to it.
 
+Downloaded report files are named `Report_YYYYMMDD_HHMMSS.{ext}` using the run's start time. Runs that were fired from a schedule are prefixed with the (sanitized) schedule name — e.g. `Daily_Smoke_Report_20260517_123000.xlsx`.
+
 #### FTP backing store
 
 Runs are archived to a separate **FTP container** (`garethflowers/ftp-server`) on an internal docker network. The web app uploads the raw `SiteRun` data as a single JSON file per run, keyed by run id. Reports are **not** pre-rendered — when you click **HTML / XLSX / PDF** on a historic run, the web app fetches the JSON from FTP and runs the report builders on the fly. The upside: re-rendering with updated templates "just works" for all past runs.

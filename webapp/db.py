@@ -109,6 +109,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "accepted_speed" not in dev_cols:
         conn.execute("ALTER TABLE devices ADD COLUMN accepted_speed TEXT DEFAULT ''")
 
+    run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+    if "schedule_name" not in run_cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN schedule_name TEXT DEFAULT ''")
+
 
 @contextmanager
 def _connect() -> Iterator[sqlite3.Connection]:
@@ -236,12 +240,14 @@ def insert_run(
     source: str,
     input_name: str,
     settings: dict[str, Any],
+    schedule_name: str = "",
 ) -> None:
     with _connect() as conn:
         conn.execute(
-            """INSERT INTO runs (id, started_at, status, source, input_name, settings_json)
-               VALUES (?, ?, 'pending', ?, ?, ?)""",
-            (run_id, started_at.isoformat(timespec="seconds"), source, input_name, json.dumps(settings)),
+            """INSERT INTO runs (id, started_at, status, source, input_name, settings_json, schedule_name)
+               VALUES (?, ?, 'pending', ?, ?, ?, ?)""",
+            (run_id, started_at.isoformat(timespec="seconds"), source, input_name,
+             json.dumps(settings), schedule_name),
         )
 
 

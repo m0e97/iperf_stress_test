@@ -125,6 +125,7 @@ def _fire_one(
         sshuser=schedule["sshuser"],
         sshpw=schedule["sshpw"],
         overrides=overrides,
+        schedule_name=name,
     )
 
     if ok:

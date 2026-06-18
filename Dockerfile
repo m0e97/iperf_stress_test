@@ -10,6 +10,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py ./
+COPY secret_store.py ./
 COPY webapp ./webapp
 
 EXPOSE 8800

@@ -5,8 +5,8 @@ This project contains a Python script, `main.py`, that runs FortiGate `diagnose 
 It is available in three forms:
 
 - **CLI / interactive GUI** — `python main.py ...` (see [Basic Usage](#basic-usage)).
-- **Web app** — FastAPI front-end at `http://localhost:8800` with a dashboard, persistent device catalog, scheduled runs, FTP-backed result archive, and on-demand report rendering (see [Web Application](#web-application)).
-- **Docker container** — `docker compose up --build` brings up the web app and the FTP archive together (see [Docker](#docker)).
+- **Web app** — FastAPI front-end at `http://localhost:8800` with a dashboard, persistent device catalog, scheduled runs, a filesystem-backed result archive, and on-demand report rendering (see [Web Application](#web-application)).
+- **Docker container** — `docker compose up --build` runs the web app with the data directory bind-mounted from the host. In Kubernetes the same path is mounted as a PersistentVolume (see [Docker](#docker)).
 
 The web app reuses the CLI engine under the hood — every flag still maps to a form field — and adds a UI layer with devices, schedules, an archive, and a throughput history chart.
 
@@ -407,7 +407,7 @@ The script exits with `0` when every spoke run succeeds and with `1` when at lea
 
 ## Web Application
 
-A FastAPI front-end in [`webapp/`](webapp/) wraps the CLI engine with a browser UI, a persistent device catalog, a FTP-backed archive of historic results, and a built-in scheduler. The recommended deployment is `docker compose up` ([Docker](#docker) below); a local-only mode is available for development.
+A FastAPI front-end in [`webapp/`](webapp/) wraps the CLI engine with a browser UI, a persistent device catalog, a filesystem-backed archive of historic results, and a built-in scheduler. The recommended deployment is `docker compose up` ([Docker](#docker) below) or a Kubernetes Deployment with a PersistentVolume; a local-only mode is available for development.
 
 ### Modes of running a test
 
@@ -435,7 +435,7 @@ All three modes go through the same engine, so the live log, archive, and report
 | `/run/{id}/stream`, `/run/{id}/status` | SSE stream and JSON status, used by the run page |
 | `/jobs/active` | JSON snapshot of the active job (or the most recent finished run when idle), plus the last 6 runs as history. Powers the bottom run bar. |
 | `/devices/template?format=csv\|xlsx` | Downloads a starter import file pre-filled with the canonical column names and one example row. |
-| `/healthz` | Liveness probe — also reports FTP reachability |
+| `/healthz` | Liveness probe — also reports the report archive directory path |
 
 ### Dashboard
 
@@ -499,17 +499,19 @@ SSH passwords for schedules are **encrypted at rest** in `app.db` using a Fernet
 | `Devices` | Number of devices tested |
 | `Result` | **N pass** in green and **N fail** in red, from the run's stored summary |
 | `Status` | Status badge (`done`, `error`, …) |
-| `Report` | Per-row **HTML / XLSX / PDF** download links rendered on demand from the FTP archive |
+| `Report` | Per-row **HTML / XLSX / PDF** download links rendered on demand from the report archive |
 
 Per-device history (with the throughput timeline chart) is still reachable at `/archive/device/{id}` — the **History** column on the Devices page links to it.
 
 Downloaded report files are named `Report_YYYYMMDD_HHMMSS.{ext}` using the run's start time. Runs that were fired from a schedule are prefixed with the (sanitized) schedule name — e.g. `Daily_Smoke_Report_20260517_123000.xlsx`.
 
-#### FTP backing store
+#### Storage layout
 
-Runs are archived to a separate **FTP container** (`garethflowers/ftp-server`) on an internal docker network. The web app uploads the raw `SiteRun` data as a single JSON file per run, keyed by run id. Reports are **not** pre-rendered — when you click **HTML / XLSX / PDF** on a historic run, the web app fetches the JSON from FTP and runs the report builders on the fly. The upside: re-rendering with updated templates "just works" for all past runs.
+Runs are archived to the local filesystem at **`$IPERF_DATA_DIR/reports/{run_id}.json`** (defaults to `<repo>/data/reports/` for local dev, `/data/reports/` in the container, and is meant to be a **PersistentVolume mount** in Kubernetes). The web app writes the raw `SiteRun` payload as a single JSON file per run, keyed by run id.
 
-The FTP server uses fixed credentials (`archive` / `archive`) and is **not exposed to the host** by default — only the runner container can reach it over the bridge network. Change the credentials in [`docker-compose.yml`](docker-compose.yml) if you publish the FTP port.
+Reports are **not** pre-rendered — when you click **HTML / XLSX / PDF** on a historic run, the web app reads the JSON back from the archive directory and runs the report builders on the fly. Re-rendering with updated templates "just works" for all past runs.
+
+The same volume also holds `app.db` (devices, runs, schedules) and `.secret.key` (the credential-encryption key, see [Credential encryption](#credential-encryption)). Back the volume up like any other stateful workload.
 
 ### Throughput timeline chart
 
@@ -559,7 +561,7 @@ The key file is gitignored. **Back it up separately from the data volume** — l
 
 ### Run locally (no Docker)
 
-The local path skips the FTP archive (and therefore the on-demand re-render flow). Useful for poking at the UI; not the recommended deployment.
+The local path is the same code as the container — it just writes the report archive under `<repo>/data/reports/` instead of the container/PV mount. Useful for poking at the UI without Docker.
 
 ```bash
 python -m venv .venv
@@ -572,7 +574,7 @@ Then open <http://localhost:8800>. Override the data location with `IPERF_DATA_D
 
 ## Docker
 
-A [`Dockerfile`](Dockerfile) and [`docker-compose.yml`](docker-compose.yml) are included. Compose is the recommended way to run — it brings up both the web app and the FTP archive on a shared internal network.
+A [`Dockerfile`](Dockerfile) and [`docker-compose.yml`](docker-compose.yml) are included. Compose runs the single `iperf-runner` service with `./data` bind-mounted at `/data` — that directory holds the SQLite DB, uploaded inputs, the `reports/` archive, and the credential encryption key.
 
 ### Build and run
 
@@ -590,10 +592,6 @@ The container needs network access to your hub and spoke firewalls (SSH on TCP 2
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `IPERF_DATA_DIR` | Base directory for uploads and the SQLite DB | `/data` (container), `./data` (local) |
-| `FTP_HOST` | FTP archive hostname | `ftp-archive` (compose service name) |
-| `FTP_PORT` | FTP archive port | `21` |
-| `FTP_USER`, `FTP_PASS` | FTP credentials | `archive` / `archive` |
-| `FTP_TIMEOUT` | FTP socket timeout (seconds) | `20` |
+| `IPERF_DATA_DIR` | Base directory for uploads, the SQLite DB, and the `reports/` archive | `/data` (container), `./data` (local) |
 | `IPERF_SECRET_KEY` | Fernet key used to encrypt SSH credentials at rest. Set this in production so the key isn't co-located with the encrypted data. | _(auto-generated key file)_ |
 | `IPERF_SECRET_KEY_FILE` | Path to a file containing the Fernet key (alternative to `IPERF_SECRET_KEY`). | _(unset)_ |

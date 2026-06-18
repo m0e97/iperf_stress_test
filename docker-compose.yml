@@ -7,32 +7,10 @@ services:
       - "8800:8800"
     environment:
       - IPERF_DATA_DIR=/data
-      - FTP_HOST=ftp-archive
-      - FTP_PORT=21
-      - FTP_USER=archive
-      - FTP_PASS=archive
+      # Optional: supply a Fernet key out-of-band so it isn't sitting next to the DB.
+      # - IPERF_SECRET_KEY=replace-with-Fernet.generate_key()
     volumes:
       - ./data:/data
-    depends_on:
-      - ftp-archive
-    networks:
-      - iperf-net
     restart: unless-stopped
     # Uncomment if firewalls are reachable only from the host network (Linux only):
     # network_mode: host
-
-  ftp-archive:
-    image: garethflowers/ftp-server:latest
-    container_name: iperf-ftp-archive
-    environment:
-      - FTP_USER=archive
-      - FTP_PASS=archive
-    volumes:
-      - ./data/archive:/home/user
-    networks:
-      - iperf-net
-    restart: unless-stopped
-
-networks:
-  iperf-net:
-    driver: bridge

@@ -1,13 +1,18 @@
+"""Report archive backed by the local filesystem (PV mount in K8s, bind volume locally)."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-# Mirror the same default as app.py: project-root/data locally, PV path in K8s
 _ROOT = Path(__file__).resolve().parent.parent
 
 
 def _reports_dir() -> Path:
+    """Return the reports directory, creating it if needed.
+
+    Resolves to ``$IPERF_DATA_DIR/reports`` (mounted as a PV in K8s) or
+    ``<repo>/data/reports`` for local development.
+    """
     base = Path(os.environ.get("IPERF_DATA_DIR", str(_ROOT / "data")))
     d = base / "reports"
     d.mkdir(parents=True, exist_ok=True)

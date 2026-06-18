@@ -37,7 +37,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 sys.path.insert(0, str(ROOT))
 import main as engine  # noqa: E402
 
-from webapp import db, ftp_archive, scheduler, serialize  # noqa: E402
+from webapp import db, report_archive, scheduler, serialize  # noqa: E402
 
 db.init_db(DB_PATH)
 
@@ -63,7 +63,7 @@ class JobState:
     started_at: datetime = field(default_factory=datetime.now)
     finished_at: datetime | None = None
     # Filled by the engine.build_html_report / engine.summarize monkey-patches
-    # so we can serialize the run to FTP after _run_tests returns.
+    # so we can serialize the run to the report archive after _run_tests returns.
     captured_runs: Any = None
     captured_summary: dict[str, Any] = field(default_factory=dict)
     captured_templates: list[str] = field(default_factory=list)
@@ -258,7 +258,7 @@ def _run_job(
         sys.stderr = original_stderr
         job.finished_at = datetime.now()
 
-        # Push results to FTP archive if we captured them.
+        # Write the run payload to the report archive directory if we captured it.
         if job.captured_runs:
             try:
                 payload = serialize.serialize_runs(
@@ -269,7 +269,7 @@ def _run_job(
                     delay_seconds=job.captured_delay,
                 )
                 archive_name = f"{job.id}.json"
-                ftp_archive.push_bytes(archive_name, json.dumps(payload).encode("utf-8"))
+                report_archive.push_bytes(archive_name, json.dumps(payload).encode("utf-8"))
                 job.archive_filename = archive_name
                 job.append_line(f"Archive saved: {archive_name}")
             except Exception as exc:  # noqa: BLE001
@@ -945,9 +945,11 @@ def archive_render(run_id: str, fmt: str):
     if not run["archive_filename"]:
         raise HTTPException(status_code=404, detail="No archive recorded for this run.")
     try:
-        raw = ftp_archive.fetch_bytes(run["archive_filename"])
+        raw = report_archive.fetch_bytes(run["archive_filename"])
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Archive file is missing on disk.")
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Failed to read archive: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to read archive: {exc}")
     payload = json.loads(raw.decode("utf-8"))
     runs_objs, summary, templates_list, delay = serialize.deserialize_runs(payload)
     input_path = Path(payload.get("input_name", "input.csv"))
@@ -1310,7 +1312,7 @@ def schedule_run_now(schedule_id: int):
 
 @app.get("/healthz")
 def healthz():
-    storage_ok, storage_detail = ftp_archive.ping()
+    storage_ok, storage_detail = report_archive.ping()
     return {"ok": True, "storage": {"ok": storage_ok, "detail": storage_detail}}
 
 

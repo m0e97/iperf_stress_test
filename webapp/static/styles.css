@@ -90,22 +90,43 @@ body {
 
 .brand {
     display: flex;
+    flex-direction: column;
     align-items: center;
     gap: 10px;
     color: var(--text-strong);
     text-decoration: none;
     margin-bottom: 24px;
     padding: 4px 8px;
+    text-align: center;
+}
+.brand-logo-frame {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    max-width: 150px;
+    padding: 6px 0;
+    background: transparent;
 }
 .brand-logo-img {
-    width: 140px;
+    width: 100%;
+    max-width: 130px;
     height: auto;
     display: block;
-    border-radius: 6px;
+    transition: filter 0.2s ease;
 }
+/* No background panel in dark mode — invert lightness while preserving hue so
+ * the dark-plum brand stays readable against the sidebar.
+ */
 :root[data-theme="dark"] .brand-logo-img {
-    background: #ffffff;
-    padding: 5px 8px;
+    filter: invert(1) hue-rotate(180deg) saturate(1.05) brightness(1.1);
+}
+.brand-text {
+    font-weight: 600;
+    font-size: 1em;
+    letter-spacing: -0.01em;
+    line-height: 1;
+    color: var(--text-strong);
 }
 
 .side-nav {

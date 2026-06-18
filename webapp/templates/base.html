@@ -18,7 +18,10 @@
 {% set path = request.url.path %}
 <aside class="sidebar">
     <a class="brand" href="/">
-        <img class="brand-logo-img" src="/static/icons/logo-01-2.png" alt="Tahakom">
+        <span class="brand-logo-frame">
+            <img class="brand-logo-img" src="/static/icons/logo-01-2.png" alt="Tahakom">
+        </span>
+        <span class="brand-text">SD-WAN iPerf</span>
     </a>
     <nav class="side-nav">
         <a href="/" {% if path == '/' %}aria-current="page"{% endif %}>

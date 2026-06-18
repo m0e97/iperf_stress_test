@@ -13,7 +13,7 @@ import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,8 @@ db.init_db(DB_PATH)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
+
+RIYADH_TZ = timezone(timedelta(hours=3))
 
 # --- Job state ------------------------------------------------------------
 
@@ -401,7 +403,7 @@ def _new_job(*, source: str, input_name: str, device_ids: list[int] | None = Non
     global ACTIVE_JOB_ID
     with JOBS_LOCK:
         _check_active()
-        job_id = uuid.uuid4().hex[:12]
+        job_id = datetime.now(RIYADH_TZ).strftime("%Y%m%d-%H%M%S")
         job = JobState(id=job_id, source=source, input_name=input_name, device_ids=list(device_ids or []))
         JOBS[job_id] = job
         ACTIVE_JOB_ID = job_id

@@ -618,6 +618,7 @@ body.has-run-bar.run-bar-expanded { padding-bottom: 380px; }
 .run-bar-label { font-weight: 500; color: var(--text-strong); white-space: nowrap; }
 .run-bar-detail { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
 .run-bar-count { color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.run-bar-clock { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 0.85em; letter-spacing: 0.01em; margin-left: auto; }
 .run-bar-link {
     color: var(--accent);
     text-decoration: none;
@@ -674,4 +675,5 @@ body.has-run-bar { padding-bottom: 56px; }
     .run-bar { padding: 8px 12px 10px; }
     .run-bar-row { gap: 10px; font-size: 0.82em; }
     .run-bar-detail { display: none; }
+    .run-bar-clock { display: none; }
 }

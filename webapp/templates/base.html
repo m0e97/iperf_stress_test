@@ -71,6 +71,7 @@
         <div class="run-bar-track"><div class="run-bar-fill indeterminate" id="run-bar-fill"></div></div>
         <span class="run-bar-detail" id="run-bar-detail"></span>
         <a class="run-bar-link" id="run-bar-link" href="#">View run</a>
+        <span class="run-bar-clock" id="run-bar-clock" aria-label="Current time (Riyadh)"></span>
         <button type="button" id="run-bar-toggle" class="run-bar-toggle" aria-expanded="false" aria-controls="run-bar-panel" aria-label="Expand">
             <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 15 12 9 18 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
@@ -146,6 +147,7 @@
         bar.classList.remove("visible", "idle");
         document.body.classList.remove("has-run-bar", "run-bar-expanded");
     }
+    const RUN_TZ = "Asia/Riyadh";
     function fmtTime(iso) {
         if (!iso) return "";
         const d = new Date(iso);
@@ -155,7 +157,7 @@
         if (diff < 60) return "just now";
         if (diff < 3600) return Math.floor(diff / 60) + "m ago";
         if (diff < 86400) return Math.floor(diff / 3600) + "h ago";
-        return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        return d.toLocaleDateString("en-GB", { timeZone: RUN_TZ, month: "short", day: "numeric" });
     }
     function statusPillHtml(status) {
         const s = (status || "").toLowerCase();
@@ -281,6 +283,21 @@
         else { start(); }
     });
     start();
+})();
+</script>
+
+<script>
+(function () {
+    const clockEl = document.getElementById("run-bar-clock");
+    const TZ = "Asia/Riyadh";
+    function updateClock() {
+        const now = new Date();
+        const date = now.toLocaleDateString("en-GB", { timeZone: TZ, day: "2-digit", month: "short", year: "numeric" });
+        const time = now.toLocaleTimeString("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+        clockEl.textContent = date + "  " + time + " (GMT+3)";
+    }
+    updateClock();
+    setInterval(updateClock, 1000);
 })();
 </script>
 </body>

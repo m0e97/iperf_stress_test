@@ -2296,19 +2296,37 @@ def _show_inputs_dialog(default_file: str) -> tuple[str, str, str] | None:
 _CREDENTIALS_FILE = Path(__file__).parent / "credentials.json"
 
 
+def _secret_store():
+    # Lazy import so the CLI without an SSH save/load run doesn't pay the
+    # cryptography import cost or trigger key creation.
+    import secret_store
+    return secret_store
+
+
 def load_credentials() -> tuple[str, str]:
     """Return (username, password) from credentials.json, or ('', '') if not found."""
     try:
         data = json.loads(_CREDENTIALS_FILE.read_text(encoding="utf-8"))
-        return data.get("username", ""), data.get("password", "")
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return "", ""
+    username = data.get("username", "")
+    password = data.get("password", "")
+    if password:
+        try:
+            password = _secret_store().decrypt(password)
+        except Exception:
+            # If the key is unavailable or the token is broken, fall back to
+            # the literal value (covers a freshly-encrypted file the user
+            # then moved to a machine without the key).
+            password = ""
+    return username, password
 
 
 def save_credentials(username: str, password: str) -> None:
-    """Write username and password to credentials.json."""
+    """Write username and password to credentials.json — password encrypted at rest."""
+    encrypted_pw = _secret_store().encrypt(password) if password else ""
     _CREDENTIALS_FILE.write_text(
-        json.dumps({"username": username, "password": password}, indent=2),
+        json.dumps({"username": username, "password": encrypted_pw}, indent=2),
         encoding="utf-8",
     )
 

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
+
+# secret_store sits at the repo root next to main.py
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import secret_store  # noqa: E402
 
 _DB_LOCK = threading.RLock()
 _DB_PATH: Path | None = None
@@ -112,6 +117,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
     if "schedule_name" not in run_cols:
         conn.execute("ALTER TABLE runs ADD COLUMN schedule_name TEXT DEFAULT ''")
+
+    # Re-encrypt any plaintext schedule passwords carried over from older builds.
+    for row in conn.execute("SELECT id, sshpw FROM schedules").fetchall():
+        pw = row["sshpw"] or ""
+        if pw and not secret_store.is_fernet_token(pw):
+            conn.execute(
+                "UPDATE schedules SET sshpw = ? WHERE id = ?",
+                (secret_store.encrypt(pw), row["id"]),
+            )
 
 
 @contextmanager
@@ -346,16 +360,21 @@ def list_runs(limit: int = 200, include_archive_filename: bool = True) -> list[d
 
 # --- Schedules ------------------------------------------------------------
 
+def _hydrate_schedule(row: dict[str, Any]) -> dict[str, Any]:
+    row["sshpw"] = secret_store.decrypt(row.get("sshpw") or "")
+    return row
+
+
 def list_schedules() -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute("SELECT * FROM schedules ORDER BY enabled DESC, name").fetchall()
-    return [dict(r) for r in rows]
+    return [_hydrate_schedule(dict(r)) for r in rows]
 
 
 def get_schedule(schedule_id: int) -> dict[str, Any] | None:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
-    return dict(row) if row else None
+    return _hydrate_schedule(dict(row)) if row else None
 
 
 def due_schedules(now_iso: str) -> list[dict[str, Any]]:
@@ -364,7 +383,7 @@ def due_schedules(now_iso: str) -> list[dict[str, Any]]:
             "SELECT * FROM schedules WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at",
             (now_iso,),
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [_hydrate_schedule(dict(r)) for r in rows]
 
 
 def _schedule_payload(values: dict[str, Any]) -> dict[str, Any]:
@@ -378,7 +397,7 @@ def _schedule_payload(values: dict[str, Any]) -> dict[str, Any]:
         "month_of_year": values.get("month_of_year"),
         "device_ids": values.get("device_ids") or "[]",
         "sshuser": (values.get("sshuser") or "").strip(),
-        "sshpw": values.get("sshpw") or "",
+        "sshpw": secret_store.encrypt(values.get("sshpw") or ""),
         "overrides_json": values.get("overrides_json") or "{}",
         "next_run_at": values.get("next_run_at"),
     }

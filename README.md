@@ -167,7 +167,7 @@ When running with no arguments, the GUI dialog collects the username and passwor
 
 The GUI can save credentials to `credentials.json` next to `main.py` so you do not have to retype them on every run. Click **Save credentials** in the dialog to write the file and **Load credentials** to fill the fields from it. Pass `--sshuser` / `--sshpw` on the command line to override the saved file for a single run.
 
-`credentials.json` is listed in `.gitignore` and is never committed.
+The **password field is encrypted at rest** using a Fernet key — see [Credential encryption](#credential-encryption) for how the key is resolved. `credentials.json` is also listed in `.gitignore` and is never committed.
 
 ## Pure-Python SSH (Paramiko)
 
@@ -485,7 +485,7 @@ Scheduled tasks fire through the same code path as the manual "Run on selected" 
 
 A background poller (every 30 s) queries the schedules table for rows with `next_run_at <= now`. If a run is already active when a schedule fires, the attempt is recorded as `skipped_busy` and the next fire is still advanced.
 
-**SSH credentials are stored in plaintext** in `/data/app.db` because the scheduler needs to fire unattended. Protect the data volume at the filesystem level. The schedule form shows a banner reminding you.
+SSH passwords for schedules are **encrypted at rest** in `app.db` using a Fernet key — see [Credential encryption](#credential-encryption). The DB still holds the encrypted tokens, so back up the key file separately if you back up the data volume.
 
 ### Archive
 
@@ -540,7 +540,22 @@ The web app accepts **one run at a time**. New submissions to `/run`, `/devices/
 
 ### Auth
 
-The web app does **not** authenticate. Bind it to a trusted network (`127.0.0.1` or an internal interface), or put it behind a reverse proxy that enforces auth. SSH credentials and the schedule database are unencrypted on the wire and on disk, so terminate TLS at a reverse proxy and protect the `/data` volume at the filesystem level.
+The web app does **not** authenticate. Bind it to a trusted network (`127.0.0.1` or an internal interface), or put it behind a reverse proxy that enforces auth. Terminate TLS at the reverse proxy and protect the `/data` volume at the filesystem level — even though credentials at rest are encrypted (see below), traffic over HTTP would carry them in cleartext.
+
+### Credential encryption
+
+Every SSH password that the app persists — both `credentials.json` (CLI/GUI saved creds) and the `sshpw` column on the `schedules` table — is encrypted with a per-deployment **Fernet key** before being written to disk. Public usernames stay readable.
+
+The key is resolved on first use, in this order:
+
+1. **`IPERF_SECRET_KEY`** env var (a urlsafe-base64 Fernet key, 44 chars). Recommended for Docker.
+2. **`IPERF_SECRET_KEY_FILE`** env var (path to a file containing the key).
+3. **`${IPERF_DATA_DIR}/.secret.key`** — auto-created on first boot with `0600` perms.
+4. **`<repo>/data/.secret.key`** for CLI use when no `IPERF_DATA_DIR` is set.
+
+Generate a key with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Existing rows that were written before this version was deployed are migrated to ciphertext the first time the DB is opened, so no manual migration is needed.
+
+The key file is gitignored. **Back it up separately from the data volume** — losing the key means losing every encrypted credential. Rotating the key is a manual exercise: pin the old value, decrypt, switch keys, re-save.
 
 ### Run locally (no Docker)
 
@@ -580,3 +595,5 @@ The container needs network access to your hub and spoke firewalls (SSH on TCP 2
 | `FTP_PORT` | FTP archive port | `21` |
 | `FTP_USER`, `FTP_PASS` | FTP credentials | `archive` / `archive` |
 | `FTP_TIMEOUT` | FTP socket timeout (seconds) | `20` |
+| `IPERF_SECRET_KEY` | Fernet key used to encrypt SSH credentials at rest. Set this in production so the key isn't co-located with the encrypted data. | _(auto-generated key file)_ |
+| `IPERF_SECRET_KEY_FILE` | Path to a file containing the Fernet key (alternative to `IPERF_SECRET_KEY`). | _(unset)_ |

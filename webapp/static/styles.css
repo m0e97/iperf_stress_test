@@ -97,21 +97,16 @@ body {
     margin-bottom: 24px;
     padding: 4px 8px;
 }
-.brand-mark {
-    display: inline-grid;
-    place-items: center;
-    width: 30px;
-    height: 21px;
-    flex-shrink: 0;
-    color: #DA291C;
-}
-:root[data-theme="dark"] .brand-mark { color: #ffffff; }
-.brand-logo {
-    width: 100%;
-    height: 100%;
+.brand-logo-img {
+    width: 140px;
+    height: auto;
     display: block;
+    border-radius: 6px;
 }
-.brand-text { font-weight: 600; font-size: 1.05em; line-height: 1; letter-spacing: -0.01em; }
+:root[data-theme="dark"] .brand-logo-img {
+    background: #ffffff;
+    padding: 5px 8px;
+}
 
 .side-nav {
     display: flex;

@@ -195,6 +195,11 @@
         </div>
         <div class="modal-body">
             <p class="muted">Same column names as the CLI input file. Existing devices (matched by spoke_ip + hub_ip) are updated in place.</p>
+            <div class="template-row">
+                <span class="muted">Need a starter file?</span>
+                <a class="template-link" href="/devices/template?format=csv" download>↓ CSV template</a>
+                <a class="template-link" href="/devices/template?format=xlsx" download>↓ XLSX template</a>
+            </div>
             <label>File <input type="file" name="input_file" accept=".csv,.xlsx" required></label>
         </div>
         <div class="modal-footer">

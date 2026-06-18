@@ -668,6 +668,58 @@ def device_delete(device_id: int):
     return RedirectResponse(url="/devices?message=Device+deleted", status_code=303)
 
 
+_DEVICE_TEMPLATE_COLUMNS = [
+    "name", "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed",
+    "server_intf", "client_intf", "traffictest_port",
+    "circuit_id", "isp",
+]
+_DEVICE_TEMPLATE_EXAMPLE = [
+    "FW-Riyadh-01", "10.10.10.1", "10.255.0.1", "10.0.0.1", "100M",
+    "Mobily", "wan1", "5201",
+    "CIRC-001", "STC",
+]
+
+
+@app.get("/devices/template")
+def device_template(format: str = "csv"):
+    fmt = (format or "csv").lower()
+    if fmt == "csv":
+        import io
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_DEVICE_TEMPLATE_COLUMNS)
+        writer.writerow(_DEVICE_TEMPLATE_EXAMPLE)
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="devices_template.csv"'},
+        )
+    if fmt == "xlsx":
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            return RedirectResponse(
+                url="/devices?error=XLSX+template+needs+openpyxl:+pip+install+openpyxl",
+                status_code=303,
+            )
+        import io
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Devices"
+        ws.append(_DEVICE_TEMPLATE_COLUMNS)
+        ws.append(_DEVICE_TEMPLATE_EXAMPLE)
+        for idx, header in enumerate(_DEVICE_TEMPLATE_COLUMNS, start=1):
+            ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = max(14, len(header) + 2)
+        buf = io.BytesIO()
+        wb.save(buf)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="devices_template.xlsx"'},
+        )
+    raise HTTPException(status_code=400, detail="format must be csv or xlsx")
+
+
 @app.post("/devices/import")
 async def device_import(input_file: UploadFile):
     suffix = Path(input_file.filename or "import.csv").suffix.lower() or ".csv"

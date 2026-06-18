@@ -1321,8 +1321,9 @@ def healthz():
 @app.on_event("startup")
 def _startup_scheduler() -> None:
     scheduler.start(
-        start_run_callable=lambda *, device_ids, sshuser, sshpw, overrides:
+        start_run_callable=lambda *, device_ids, sshuser, sshpw, overrides, schedule_name="":
             _start_run_for_devices(
                 device_ids=device_ids, sshuser=sshuser, sshpw=sshpw, overrides=overrides,
+                schedule_name=schedule_name,
             )
     )

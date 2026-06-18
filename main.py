@@ -1529,89 +1529,111 @@ def build_html_report(
   <title>SD-WAN Traffic Test Report</title>
   <style>
     :root {{
-      --bg: #f6f3ee;
-      --panel: #fffdf9;
-      --text: #1f2933;
-      --muted: #52606d;
-      --border: #d9d2c6;
-      --success: #116530;
-      --failed: #9b1c1c;
-      --template-error: #b26b00;
-      --skipped: #52606d;
-      --accent: #8c3d2b;
+      --bg: #f4f6f9;
+      --panel: #ffffff;
+      --text: #1a1f2e;
+      --muted: #5a6478;
+      --border: #dde2ec;
+      --success: #0e7a4a;
+      --failed: #c0392b;
+      --template-error: #c07000;
+      --skipped: #5a6478;
+      --accent: #1bbfbf;
+      --accent-dark: #5c2d6e;
+      --accent-soft: rgba(27, 191, 191, 0.10);
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      font-family: "Segoe UI", Tahoma, sans-serif;
-      background: linear-gradient(180deg, #f4efe7 0%, #fcfaf6 100%);
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
       color: var(--text);
-      line-height: 1.5;
+      line-height: 1.55;
     }}
     main {{
       max-width: 1200px;
       margin: 0 auto;
-      padding: 32px 20px 48px;
+      padding: 36px 24px 56px;
     }}
-    h1, h2 {{ margin-top: 0; }}
-    .hero, .summary, .site-card {{
+    h1 {{ margin: 0 0 4px; font-size: 1.6rem; font-weight: 700; color: var(--accent-dark); }}
+    h2 {{ margin: 0 0 14px; font-size: 1.1rem; font-weight: 600; color: var(--accent-dark); }}
+    .hero {{
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 24px;
-      box-shadow: 0 10px 24px rgba(31, 41, 51, 0.06);
+      border-top: 4px solid var(--accent);
+      border-radius: 12px;
+      padding: 28px 32px;
+      box-shadow: 0 2px 12px rgba(27,191,191,0.07);
+      margin-bottom: 20px;
+    }}
+    .summary, .site-card {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px 28px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
       margin-bottom: 20px;
     }}
     .summary-grid {{
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 12px;
+      gap: 14px;
       margin: 16px 0;
     }}
     .metric {{
-      background: #faf6f0;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 14px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(27,191,191,0.25);
+      border-radius: 10px;
+      padding: 16px;
     }}
     .metric-label {{
       color: var(--muted);
-      font-size: 0.9rem;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 600;
     }}
     .metric-value {{
-      font-size: 1.35rem;
+      font-size: 1.6rem;
       font-weight: 700;
+      color: var(--accent-dark);
+      margin-top: 4px;
     }}
     table {{
       width: 100%;
       border-collapse: collapse;
       margin-top: 16px;
-      font-size: 0.95rem;
+      font-size: 0.92rem;
     }}
     th {{
-      background: #f4efe7;
+      background: rgba(92,45,110,0.07);
+      color: var(--accent-dark);
       font-weight: 600;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }}
     th, td {{
-      padding: 10px 12px;
+      padding: 10px 14px;
       border-bottom: 1px solid var(--border);
       text-align: left;
       vertical-align: middle;
     }}
+    tbody tr:hover {{ background: var(--accent-soft); }}
     tr:last-child td {{ border-bottom: none; }}
     code, pre {{
       font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
     }}
     pre {{
       white-space: pre-wrap;
       word-break: break-word;
-      background: #fbf8f3;
+      background: #f0f4f8;
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 12px;
+      border-radius: 8px;
+      padding: 14px;
       overflow-x: auto;
-      margin-top: 8px;
+      margin-top: 10px;
     }}
     .command-block {{
       padding-top: 14px;
@@ -1620,10 +1642,11 @@ def build_html_report(
     }}
     .badge {{
       display: inline-block;
-      padding: 2px 10px;
+      padding: 3px 12px;
       border-radius: 999px;
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       font-weight: 700;
+      letter-spacing: 0.03em;
     }}
     .success {{ color: #fff; background: var(--success); }}
     .failed {{ color: #fff; background: var(--failed); }}
@@ -1631,16 +1654,17 @@ def build_html_report(
     .skipped {{ color: #fff; background: var(--skipped); }}
     .muted {{ color: var(--muted); }}
     ul {{ margin: 0; padding-left: 20px; }}
-    .summary-grid .metric {{ cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; }}
-    .summary-grid .metric:hover {{ box-shadow: 0 0 0 2px var(--accent); }}
-    .summary-grid .metric.active {{ box-shadow: 0 0 0 3px var(--accent); background: var(--accent); color: #fff; }}
-    .summary-grid .metric.active .metric-label, .summary-grid .metric.active .metric-value {{ color: #fff; }}
+    .summary-grid .metric {{ cursor: pointer; transition: box-shadow 0.15s, transform 0.1s; }}
+    .summary-grid .metric:hover {{ box-shadow: 0 0 0 2px var(--accent); transform: translateY(-1px); }}
+    .summary-grid .metric.active {{ box-shadow: 0 0 0 3px var(--accent); background: var(--accent); }}
+    .summary-grid .metric.active .metric-label {{ color: rgba(255,255,255,0.8); }}
+    .summary-grid .metric.active .metric-value {{ color: #fff; }}
   </style>
 </head>
 <body>
   <main>
     <section class="hero">
-      <h1>FortiGate Traffic Test Report</h1>
+      <h1>SD-WAN iPerf Traffic Test Report</h1>
       <p class="muted">Generated at {html.escape(format_timestamp(created_at))}</p>
       <p><strong>Input File:</strong> {html.escape(str(input_path))}</p>
       <p><strong>Report File:</strong> {html.escape(str(output_path))}</p>

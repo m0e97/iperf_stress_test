@@ -76,6 +76,7 @@ class JobState:
     current_message: str = ""
 
     def append_line(self, line: str) -> None:
+        line = line.rstrip("\r")
         with self.log_lock:
             self.log_lines.append(line)
             self._update_progress_locked(line)

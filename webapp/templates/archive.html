@@ -3,31 +3,68 @@
 {% block content %}
 <section class="card">
     <h1>Archive</h1>
-    <p class="muted">Browse historic test results by device. Each run is stored as raw data on the FTP archive and rendered on demand to HTML, Excel, or PDF.</p>
-    {% if not devices %}
+    <p class="muted">Historic test runs. Each row is one run — download the rendered report in HTML, XLSX, or PDF.</p>
+
+    {% if not runs %}
     <div class="empty-state">
         <div class="empty-icon">▤</div>
         <h3>Nothing archived yet</h3>
-        <p>Add devices and run a test to start building history.</p>
+        <p>Run a test to start building history.</p>
         <div class="actions">
             <a class="button" href="/devices">Go to Devices</a>
         </div>
     </div>
     {% else %}
     <div class="table-wrap">
-    <table class="reports">
+    <table class="reports archive-runs">
         <thead>
-            <tr><th>Spoke IP</th><th>Hub IP</th><th>Name</th><th>Last run</th><th>Total runs</th><th></th></tr>
+            <tr>
+                <th>Run</th>
+                <th>Source</th>
+                <th>Started</th>
+                <th>Finished</th>
+                <th>Devices</th>
+                <th>Result</th>
+                <th>Status</th>
+                <th>Report</th>
+            </tr>
         </thead>
         <tbody>
-            {% for d in devices %}
+            {% for r in runs %}
+            {% set total = r.summary.total_sites %}
+            {% set ok = r.summary.successful_sites %}
+            {% set fail = r.summary.failed_sites %}
             <tr>
-                <td><code>{{ d.spoke_ip }}</code></td>
-                <td><code>{{ d.hub_ip }}</code></td>
-                <td>{{ d.name or "—" }}</td>
-                <td>{{ d.last_run or "—" }}</td>
-                <td>{{ d.run_count }}</td>
-                <td>{% if d.run_count %}<a href="/archive/device/{{ d.id }}">view history</a>{% endif %}</td>
+                <td><a href="/run/{{ r.id }}"><code>{{ r.id }}</code></a></td>
+                <td><span class="muted">{{ r.source or "—" }}</span></td>
+                <td style="white-space:nowrap;">{{ r.started_at or "—" }}</td>
+                <td style="white-space:nowrap;">{{ r.finished_at or "—" }}</td>
+                <td style="text-align:center;">{% if total is not none %}{{ total }}{% else %}<span class="muted">—</span>{% endif %}</td>
+                <td>
+                    {% if total %}
+                        <span class="result-pair">
+                            <span class="result-ok" title="Successful devices">{{ ok or 0 }} pass</span>
+                            <span class="result-sep">·</span>
+                            <span class="result-fail" title="Failed devices">{{ fail or 0 }} fail</span>
+                        </span>
+                    {% else %}
+                        <span class="muted">—</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="badge {% if r.status == 'done' and (r.exit_code or 0) == 0 %}ok{% elif r.status == 'error' %}err{% endif %}">
+                        {{ r.status }}{% if r.exit_code is not none and r.exit_code != 0 %} ({{ r.exit_code }}){% endif %}
+                    </span>
+                </td>
+                <td style="white-space:nowrap;">
+                    {% if r.archive_filename %}
+                    <a href="/archive/run/{{ r.id }}/render/html" target="_blank">HTML</a>
+                    <a href="/archive/run/{{ r.id }}/render/xlsx">XLSX</a>
+                    <a href="/archive/run/{{ r.id }}/render/pdf">PDF</a>
+                    {% else %}
+                    <span class="muted">no archive</span>
+                    {% endif %}
+                </td>
             </tr>
             {% endfor %}
         </tbody>

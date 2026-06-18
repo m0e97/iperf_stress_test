@@ -314,10 +314,16 @@ def latest_run() -> dict[str, Any] | None:
 
 
 def recent_runs(limit: int = 6) -> list[dict[str, Any]]:
+    return list_runs(limit=limit, include_archive_filename=False)
+
+
+def list_runs(limit: int = 200, include_archive_filename: bool = True) -> list[dict[str, Any]]:
+    cols = ["id", "started_at", "finished_at", "status", "exit_code", "source", "summary_json"]
+    if include_archive_filename:
+        cols.append("archive_filename")
     with _connect() as conn:
         rows = conn.execute(
-            """SELECT id, started_at, finished_at, status, exit_code, source, summary_json
-               FROM runs ORDER BY started_at DESC LIMIT ?""",
+            f"SELECT {', '.join(cols)} FROM runs ORDER BY started_at DESC LIMIT ?",
             (int(limit),),
         ).fetchall()
     out: list[dict[str, Any]] = []

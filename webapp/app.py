@@ -858,11 +858,11 @@ async def devices_run(
 
 @app.get("/archive", response_class=HTMLResponse)
 def archive_page(request: Request):
-    devices = db.list_devices()
+    runs = db.list_runs(limit=200)
     return templates.TemplateResponse(
         request,
         "archive.html",
-        {"devices": devices, "active_job_id": _active_job_id()},
+        {"runs": runs, "active_job_id": _active_job_id()},
     )
 
 

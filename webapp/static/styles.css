@@ -380,6 +380,13 @@ table.reports tbody tr:hover { background: var(--panel-2); }
 table.reports td a { color: var(--accent); margin-right: 12px; text-decoration: none; font-weight: 500; }
 table.reports td a:hover { text-decoration: underline; }
 
+.result-pair { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.result-ok { color: var(--ok); font-weight: 600; }
+.result-fail { color: var(--err); font-weight: 600; }
+.result-sep { color: var(--muted); }
+table.reports.archive-runs td { font-size: 0.9em; }
+table.reports.archive-runs td code { font-size: 0.85em; }
+
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .table-wrap table.reports { min-width: 720px; }
 

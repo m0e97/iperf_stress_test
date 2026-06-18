@@ -428,8 +428,8 @@ All three modes go through the same engine, so the live log, archive, and report
 | `/devices/{id}/edit` | Edit one device |
 | `/schedules` | List, toggle, edit, delete, manually fire scheduled runs |
 | `/schedules/new`, `/schedules/{id}/edit` | Schedule form (once / daily / weekly / monthly / yearly) |
-| `/archive` | Device-centric list of all devices that have run history |
-| `/archive/device/{id}` | All runs for a device, with the throughput timeline chart |
+| `/archive` | Run-centric list of historic runs with start/finish time, devices tested, green/red pass-fail counts, and HTML/XLSX/PDF download links |
+| `/archive/device/{id}` | Per-device view: all runs for that device plus the throughput timeline chart (linked from the **History** column on the Devices page) |
 | `/archive/run/{id}/render/{fmt}` | Render an archived run as `html` / `xlsx` / `pdf` on demand |
 | `/run/{id}` | Live log view (SSE) for an in-flight or recent run |
 | `/run/{id}/stream`, `/run/{id}/status` | SSE stream and JSON status, used by the run page |

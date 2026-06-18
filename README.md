@@ -433,6 +433,7 @@ All three modes go through the same engine, so the live log, archive, and report
 | `/archive/run/{id}/render/{fmt}` | Render an archived run as `html` / `xlsx` / `pdf` on demand |
 | `/run/{id}` | Live log view (SSE) for an in-flight or recent run |
 | `/run/{id}/stream`, `/run/{id}/status` | SSE stream and JSON status, used by the run page |
+| `/jobs/active` | JSON snapshot of the active job (or the most recent finished run when idle), plus the last 6 runs as history. Powers the bottom run bar. |
 | `/healthz` | Liveness probe — also reports FTP reachability |
 
 ### Dashboard
@@ -499,9 +500,18 @@ The device archive page (`/archive/device/{id}`) shows a per-device throughput t
 
 The chart is inline SVG with theme-aware colors — no CDN dependency.
 
-### Theme
+### App chrome
 
-A circular icon button in the top-right corner toggles between dark and light themes. The choice is persisted to `localStorage` and applied before paint so there's no flash on page load.
+Every page shares the same chrome:
+
+- **Sidebar** — Fortinet logomark (inline SVG, tinted via CSS so it follows the active theme) next to the "SD-WAN iPerf" wordmark, then a nav with line-icon links for **Dashboard**, **Devices**, **Archive**, and **Schedules**.
+- **Top-right cluster** — a clock chip showing the current date, time, and `GMT+3` (rendered in `Asia/Riyadh` so it stays consistent regardless of the viewer's locale) sits next to a circular theme-toggle button. The chosen theme is persisted to `localStorage` and applied before paint so there's no flash on load.
+- **Bottom run bar** — a fixed-position bar that polls `/jobs/active` every 2 s while a run is active (15 s when idle). It collapses to a single line by default and expands via a chevron on the right:
+  - **Running** — pulsing dot, `N / total` progress, indeterminate slide while totals are unknown, the current site message, and a "View run" link. Expanded view adds the trailing 8 log lines and source/start metadata.
+  - **Idle** — status pill for the last finished run, pass · fail counts, relative timestamp ("12m ago"), and a "View" link. Expanded view lists the last 6 runs with status, counts, and a per-run link.
+  - **Empty** — bar stays hidden until the first run is recorded.
+
+  The expanded/collapsed state is remembered in `localStorage`. Polling pauses while the tab is hidden.
 
 ### Concurrency
 

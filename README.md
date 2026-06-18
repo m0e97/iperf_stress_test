@@ -434,6 +434,7 @@ All three modes go through the same engine, so the live log, archive, and report
 | `/run/{id}` | Live log view (SSE) for an in-flight or recent run |
 | `/run/{id}/stream`, `/run/{id}/status` | SSE stream and JSON status, used by the run page |
 | `/jobs/active` | JSON snapshot of the active job (or the most recent finished run when idle), plus the last 6 runs as history. Powers the bottom run bar. |
+| `/devices/template?format=csv\|xlsx` | Downloads a starter import file pre-filled with the canonical column names and one example row. |
 | `/healthz` | Liveness probe — also reports FTP reachability |
 
 ### Dashboard
@@ -465,6 +466,8 @@ Devices are stored in SQLite at `/data/app.db`. Each row mirrors the CLI input f
 | `notes` | Free-text notes |
 
 Add devices manually from the **Add Device** modal, or bulk-import a CSV / XLSX — existing rows (matched by `spoke_ip + hub_ip`) are updated in place. CSV runs from the Quick Run page also get linked to their matching device by IP, so historic results show up in both flows.
+
+If you don't have a file yet, the **Import** modal exposes two **↓ CSV template** / **↓ XLSX template** links (served from `/devices/template?format=…`). Both downloads ship with the same column headers the importer recognizes — `name`, `spoke_ip`, `hub_ip`, `hub_mgmt_ip`, `speed`, `server_intf`, `client_intf`, `traffictest_port`, `circuit_id`, `isp` — plus one example row you can edit or delete. The XLSX template needs `openpyxl` installed in the runner environment; without it the link redirects back with a banner pointing at the `pip install` command.
 
 The devices page includes a live search bar and a multi-select flow (select → run modal). The device picker on the schedule form shows searchable cards with ISP / BW / circuit ID badges.
 

@@ -381,6 +381,10 @@ def parse_speed_to_mbps(raw_speed: str) -> float | None:
         return value * 1000
     if any(unit in normalized for unit in ("kbps", "kbit", "kbits")) or normalized.endswith("k"):
         return value / 1000
+    # Megabits per second is the base unit. Check it before the bare-bits check
+    # below, since "bps"/"bit" are substrings of "mbps"/"mbit".
+    if any(unit in normalized for unit in ("mbps", "mbit", "mbits")) or normalized.endswith("m"):
+        return value
     if any(unit in normalized for unit in ("bps", "bit", "bits")):
         return value / 1_000_000
     return value

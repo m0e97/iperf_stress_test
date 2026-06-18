@@ -1,0 +1,5 @@
+# Test/dev dependencies. Install with:
+#   .venv/Scripts/python -m pip install -r requirements-dev.txt
+-r requirements.txt
+pytest==9.1.0
+httpx==0.28.1     # required by Starlette/FastAPI TestClient

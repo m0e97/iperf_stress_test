@@ -595,3 +595,32 @@ The container needs network access to your hub and spoke firewalls (SSH on TCP 2
 | `IPERF_DATA_DIR` | Base directory for uploads, the SQLite DB, and the `reports/` archive | `/data` (container), `./data` (local) |
 | `IPERF_SECRET_KEY` | Fernet key used to encrypt SSH credentials at rest. Set this in production so the key isn't co-located with the encrypted data. | _(auto-generated key file)_ |
 | `IPERF_SECRET_KEY_FILE` | Path to a file containing the Fernet key (alternative to `IPERF_SECRET_KEY`). | _(unset)_ |
+
+## Tests
+
+A `pytest` regression suite lives in [`tests/`](tests/). Run it after **any** code change to confirm nothing that already worked has broken.
+
+### Install test dependencies (once)
+
+```bash
+.venv/Scripts/python -m pip install -r requirements-dev.txt
+```
+
+### Run
+
+```bash
+.venv/Scripts/python -m pytest
+```
+
+The tests are hermetic: `tests/conftest.py` points `IPERF_DATA_DIR` at a throwaway temp directory before importing the app, so your real `data/` (DB, reports, credentials) is never touched, and no network or SSH access is required.
+
+### What is covered
+
+| File | Area | Why it matters |
+| --- | --- | --- |
+| `test_scheduler.py` | `compute_next_run` for once/daily/weekly/monthly/yearly + the fire path | Wrong next-run math means schedules fire at the wrong time or never; includes a guard against the startup-callable signature bug |
+| `test_progress.py` | `JobState` `[n/m]` progress parsing | Keeps the run-bar percentage in sync with console progress (incl. the Windows `\r` regression) |
+| `test_engine.py` | `parse_speed_to_mbps`, `_compute_result`, `summarize`, format helpers | These drive every pass/fail decision and report number |
+| `test_report.py` | `build_html_report` output | Valid HTML + Tahakom brand colors don't silently regress |
+| `test_db.py` | Devices / runs / schedules persistence | CRUD + credential encryption at rest |
+| `test_app_api.py` | `/healthz`, `/jobs/active`, run-ID format | Endpoints respond; run names stay `YYYYMMDD-HHMMSS` in Riyadh time |

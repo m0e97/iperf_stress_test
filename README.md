@@ -621,6 +621,6 @@ The tests are hermetic: `tests/conftest.py` points `IPERF_DATA_DIR` at a throwaw
 | `test_scheduler.py` | `compute_next_run` for once/daily/weekly/monthly/yearly + the fire path | Wrong next-run math means schedules fire at the wrong time or never; includes a guard against the startup-callable signature bug |
 | `test_progress.py` | `JobState` `[n/m]` progress parsing | Keeps the run-bar percentage in sync with console progress (incl. the Windows `\r` regression) |
 | `test_engine.py` | `parse_speed_to_mbps`, `_compute_result`, `summarize`, format helpers | These drive every pass/fail decision and report number |
-| `test_report.py` | `build_html_report` output | Valid HTML + Tahakom brand colors don't silently regress |
+| `test_report.py` | `build_html_report` output | Valid HTML + report theme colors don't silently regress |
 | `test_db.py` | Devices / runs / schedules persistence | CRUD + credential encryption at rest |
 | `test_app_api.py` | `/healthz`, `/jobs/active`, run-ID format | Endpoints respond; run names stay `YYYYMMDD-HHMMSS` in Riyadh time |

@@ -1,8 +1,8 @@
 """Tests for the generated HTML report (build_html_report).
 
 Covers (a) the report still renders valid-looking HTML with the data rows it is
-given, and (b) the Tahakom brand colors remain in the stylesheet so a future
-refactor doesn't silently revert the theme.
+given, and (b) the report theme colors remain in the stylesheet so a future
+refactor doesn't silently drop the theme.
 """
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from pathlib import Path
 import main as engine
 from main import CommandResult, SiteDefinition, SiteRun
 
-# Tahakom brand palette used in the report theme.
-TEAL = "#1bbfbf"
-PURPLE = "#5c2d6e"
+# Accent + surface colors used in the report theme.
+ACCENT = "#8c3d2b"
+PANEL = "#fffdf9"
 
 
 def _make_run(name: str, sender_mbps: float, speed_mbps: float = 100.0) -> SiteRun:
@@ -61,11 +61,11 @@ def test_report_contains_site_rows_and_summary(tmp_path):
     assert "Failed Sites" in html
 
 
-def test_report_uses_tahakom_brand_colors(tmp_path):
-    """Regression: keep the Tahakom teal + purple theme in the report CSS."""
+def test_report_uses_theme_colors(tmp_path):
+    """Regression: keep the report's accent + panel theme colors in the CSS."""
     html = _build(tmp_path).lower()
-    assert TEAL in html, "Tahakom teal accent missing from report stylesheet"
-    assert PURPLE in html, "Tahakom purple missing from report stylesheet"
+    assert ACCENT in html, "accent color missing from report stylesheet"
+    assert PANEL in html, "panel color missing from report stylesheet"
 
 
 def test_report_pass_fail_badges(tmp_path):

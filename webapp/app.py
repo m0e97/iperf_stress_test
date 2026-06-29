@@ -13,7 +13,7 @@ import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,10 +31,13 @@ from fastapi.templating import Jinja2Templates
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("IPERF_DATA_DIR", str(ROOT / "data"))).resolve()
 UPLOAD_DIR = DATA_DIR / "uploads"
+REPORTS_DIR = DATA_DIR / "reports"
 DB_PATH = DATA_DIR / "app.db"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(ROOT))
+import clock  # noqa: E402
 import main as engine  # noqa: E402
 
 from webapp import db, report_archive, scheduler, serialize  # noqa: E402
@@ -42,9 +45,12 @@ from webapp import db, report_archive, scheduler, serialize  # noqa: E402
 db.init_db(DB_PATH)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+# Expose the configured app timezone offset (hours) to every template so the
+# top-right UI clock matches the server-side timestamps (default GMT+3).
+templates.env.globals["app_tz_offset_hours"] = (
+    clock.app_timezone().utcoffset(None).total_seconds() / 3600
+)
 
-
-RIYADH_TZ = timezone(timedelta(hours=3))
 
 # --- Job state ------------------------------------------------------------
 
@@ -60,7 +66,7 @@ class JobState:
     input_name: str = ""
     source: str = "csv"
     archive_filename: str | None = None
-    started_at: datetime = field(default_factory=datetime.now)
+    started_at: datetime = field(default_factory=clock.now)
     finished_at: datetime | None = None
     # Filled by the engine.build_html_report / engine.summarize monkey-patches
     # so we can serialize the run to the report archive after _run_tests returns.
@@ -70,6 +76,7 @@ class JobState:
     captured_delay: int = 0
     device_ids: list[int] = field(default_factory=list)
     schedule_name: str = ""
+    cancel_requested: bool = False
     # Progress tracking — parsed from engine log markers like "[3/12] Running site '...'"
     current_step: int = 0
     total_steps: int = 0
@@ -146,7 +153,7 @@ def _build_argv(
     hub_server_intf: str,
     spoke_client_intf: str,
     traffictest_port: str,
-    traffictest_duration: int,
+    traffictest_duration: int | None,
     hub_server_start_delay: float,
     delay_seconds: int,
     timeout: int | None,
@@ -158,12 +165,20 @@ def _build_argv(
         "--output", str(output_path),
         "--paramiko",
         "--hub-server-intf", hub_server_intf or engine.DEFAULT_HUB_SERVER_INTF,
-        "--spoke-client-intf", spoke_client_intf or engine.DEFAULT_SPOKE_CLIENT_INTF,
         "--traffictest-port", traffictest_port or engine.DEFAULT_TRAFFICTEST_PORT,
-        "--traffictest-duration", str(traffictest_duration),
         "--hub-server-start-delay", str(hub_server_start_delay),
         "--delay-seconds", str(delay_seconds),
     ]
+    # Only force a run-wide test duration when one was supplied; otherwise each
+    # device's own traffictest_duration (or FortiGate's 10s default) applies.
+    if traffictest_duration:
+        argv += ["--traffictest-duration", str(traffictest_duration)]
+    # Only pass --spoke-client-intf when explicitly overridden. Each device row
+    # carries its own client_intf (which wins anyway), so forcing the global
+    # default here just showed a misleading value in the console. When omitted,
+    # the engine falls back to its own default for rows that don't set one.
+    if spoke_client_intf:
+        argv += ["--spoke-client-intf", spoke_client_intf]
     if sshuser:
         argv += ["--sshuser", sshuser]
     if hub_ip:
@@ -235,29 +250,34 @@ def _run_job(
     sys.stderr = tee_err
 
     orig_html, orig_summarize = _install_capture_hook(job)
+    engine._cancel_check = lambda: job.cancel_requested
 
     job.status = "running"
     job.append_line(f"$ python main.py {' '.join(shlex.quote(a) for a in argv)}")
     try:
         rc = engine._run_tests(args, parser)
         job.exit_code = int(rc) if isinstance(rc, int) else 0
-        job.status = "done"
+        job.status = "cancelled" if job.cancel_requested else "done"
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 1
         job.exit_code = code
-        job.status = "done" if code == 0 else "error"
-        if code != 0:
-            job.error_message = f"Exited with code {code}."
+        if job.cancel_requested:
+            job.status = "cancelled"
+        else:
+            job.status = "done" if code == 0 else "error"
+            if code != 0:
+                job.error_message = f"Exited with code {code}."
     except Exception as exc:  # noqa: BLE001
         job.status = "error"
         job.error_message = f"{type(exc).__name__}: {exc}"
         job.exit_code = 1
         job.append_line(f"ERROR: {job.error_message}")
     finally:
+        engine._cancel_check = None
         _uninstall_capture_hook(orig_html, orig_summarize)
         sys.stdout = original_stdout
         sys.stderr = original_stderr
-        job.finished_at = datetime.now()
+        job.finished_at = clock.now()
 
         # Write the run payload to the report archive directory if we captured it.
         if job.captured_runs:
@@ -285,7 +305,9 @@ def _run_job(
                     "device_id": None,  # filled in by lookup, overridden below for devices source
                     "status": site_run.status,
                     "display_name": site_run.site.display_name or "",
-                    "throughput_mbps": site_run.max_throughput_mbps,
+                    # Sender throughput — same value the engine evaluates for pass/fail,
+                    # so the dashboard recompute matches the run result exactly.
+                    "throughput_mbps": site_run.max_sender_throughput_mbps,
                 })
             # If source is 'devices', force device_id mapping by (spoke_ip, hub_ip)
             if job.source == "devices" and job.device_ids:
@@ -406,7 +428,7 @@ def _new_job(*, source: str, input_name: str, device_ids: list[int] | None = Non
     global ACTIVE_JOB_ID
     with JOBS_LOCK:
         _check_active()
-        job_id = datetime.now(RIYADH_TZ).strftime("%Y%m%d-%H%M%S")
+        job_id = clock.now().strftime("%Y%m%d-%H%M%S")
         job = JobState(
             id=job_id, source=source, input_name=input_name,
             device_ids=list(device_ids or []), schedule_name=schedule_name,
@@ -418,24 +440,46 @@ def _new_job(*, source: str, input_name: str, device_ids: list[int] | None = Non
 
 # --- Index / CSV-upload run ----------------------------------------------
 
+def _throughput_passes(throughput, speed: str | None, accepted_speed: str | None) -> bool | None:
+    """Pass/fail for one measured throughput against its threshold.
+
+    Returns True (pass), False (fail), or None (untested — no throughput).
+    Threshold is the device's accepted_speed if set, else 90% of its rated speed;
+    if neither is known, any recorded throughput counts as a pass.
+    """
+    if throughput is None:
+        return None
+    accepted = engine.parse_speed_to_mbps(accepted_speed or "")
+    if accepted is None:
+        spd = engine.parse_speed_to_mbps(speed or "")
+        accepted = round(spd * engine.DEFAULT_ACCEPT_RATIO, 2) if spd is not None else None
+    return accepted is None or throughput >= accepted
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     stats = db.dashboard_stats()
 
     device_pass = device_fail = device_untested = 0
     for d in stats["device_health"]:
-        throughput = d["last_throughput"]
-        if throughput is None:
+        verdict = _throughput_passes(d["last_throughput"], d.get("speed"), d.get("accepted_speed"))
+        if verdict is None:
             device_untested += 1
-            continue
-        accepted = engine.parse_speed_to_mbps(d.get("accepted_speed") or "")
-        if accepted is None:
-            spd = engine.parse_speed_to_mbps(d.get("speed") or "")
-            accepted = round(spd * 0.90, 2) if spd is not None else None
-        if accepted is None or throughput >= accepted:
+        elif verdict:
             device_pass += 1
         else:
             device_fail += 1
+
+    # Pass/fail for the single most recent run only (distinct from fleet health above).
+    # Uses the engine's verdict recorded at run time (site_status), i.e. exactly what
+    # that run decided — not a recompute against possibly-edited device thresholds.
+    last_run_pass = last_run_total = 0
+    last_run_info = db.last_run_health()
+    if last_run_info and last_run_info["sites"]:
+        last_run_total = len(last_run_info["sites"])
+        last_run_pass = sum(
+            1 for s in last_run_info["sites"] if (s.get("site_status") or "").startswith("Pass")
+        )
 
     return templates.TemplateResponse(
         request,
@@ -454,6 +498,8 @@ def index(request: Request):
             "device_pass": device_pass,
             "device_fail": device_fail,
             "device_untested": device_untested,
+            "last_run_pass": last_run_pass,
+            "last_run_total": last_run_total,
         },
     )
 
@@ -468,7 +514,7 @@ async def start_run(
     hub_server_intf: str = Form(""),
     spoke_client_intf: str = Form(""),
     traffictest_port: str = Form(""),
-    traffictest_duration: int = Form(engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS),
+    traffictest_duration: int | None = Form(None),
     hub_server_start_delay: float = Form(engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS),
     delay_seconds: int = Form(0),
     timeout: int = Form(0),
@@ -481,8 +527,7 @@ async def start_run(
     with upload_path.open("wb") as fh:
         shutil.copyfileobj(input_file.file, fh)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = UPLOAD_DIR / f"_render_{timestamp}_{job.id}.html"
+    output_path = REPORTS_DIR / f"{_report_basename(job.id)}.html"
 
     settings = {
         "sshuser": sshuser, "hub_ip": hub_ip, "hub_mgmt_ip": hub_mgmt_ip,
@@ -534,7 +579,7 @@ def run_status(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found.")
     reports = []
-    if job.status == "done" and job.archive_filename:
+    if job.status in ("done", "cancelled") and job.archive_filename:
         for fmt in ("html", "xlsx", "pdf"):
             reports.append({"label": fmt.upper(), "url": f"/archive/run/{job.id}/render/{fmt}"})
     return JSONResponse({
@@ -547,6 +592,18 @@ def run_status(job_id: str):
         "archive_filename": job.archive_filename,
         "reports": reports,
     })
+
+
+@app.post("/run/{job_id}/stop")
+def stop_run(job_id: str):
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.status != "running":
+        return JSONResponse({"ok": False, "status": job.status, "message": "Run is not active."})
+    job.cancel_requested = True
+    job.append_line("⏹ Stop requested — finishing the current device, then halting…")
+    return JSONResponse({"ok": True, "status": "stopping"})
 
 
 @app.get("/run/{job_id}/stream")
@@ -563,7 +620,7 @@ async def stream_run(job_id: str):
                 for line in lines:
                     yield f"data: {line}\n\n"
                 offset += len(lines)
-            terminal = job.status in {"done", "error"} and offset >= len(job.log_lines)
+            terminal = job.status in {"done", "error", "cancelled"} and offset >= len(job.log_lines)
             if terminal:
                 yield (
                     "event: end\n"
@@ -675,13 +732,13 @@ def device_delete(device_id: int):
 
 
 _DEVICE_TEMPLATE_COLUMNS = [
-    "name", "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed",
-    "server_intf", "client_intf", "traffictest_port",
+    "name", "spoke_ip", "hub_wan_ip", "hub_mgmt_ip", "speed", "accepted_speed",
+    "server_intf", "client_intf", "traffictest_port", "traffictest_duration",
     "circuit_id", "isp",
 ]
 _DEVICE_TEMPLATE_EXAMPLE = [
-    "FW-Riyadh-01", "10.10.10.1", "10.255.0.1", "10.0.0.1", "100M",
-    "Mobily", "wan1", "5201",
+    "FW-Riyadh-01", "10.10.10.1", "10.255.0.1", "10.0.0.1", "100Mbps", "",
+    "Mobily", "wan1", "5201", "10",
     "CIRC-001", "STC",
 ]
 
@@ -747,9 +804,11 @@ async def device_import(input_file: UploadFile):
             "hub_ip": engine.find_first_value(norm, engine.HUB_IP_ALIASES),
             "hub_mgmt_ip": engine.find_first_value(norm, engine.HUB_MGMT_IP_ALIASES),
             "speed": engine.find_first_value(norm, engine.SPEED_ALIASES),
+            "accepted_speed": engine.find_first_value(norm, engine.ACCEPTED_SPEED_ALIASES),
             "server_intf": engine.find_first_value(norm, engine.HUB_SERVER_INTF_ALIASES),
             "client_intf": engine.find_first_value(norm, engine.SPOKE_CLIENT_INTF_ALIASES),
             "traffictest_port": engine.find_first_value(norm, engine.TRAFFICTEST_PORT_ALIASES),
+            "traffictest_duration": engine.find_first_value(norm, engine.TRAFFICTEST_DURATION_ALIASES),
             "circuit_id": engine.find_first_value(norm, engine.CIRCUIT_ID_ALIASES),
             "isp": engine.find_first_value(norm, engine.ISP_ALIASES),
             "notes": "",
@@ -789,8 +848,8 @@ def _start_run_for_devices(
     with upload_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow([
-            "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed",
-            "server_intf", "client_intf", "traffictest_port",
+            "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed", "accepted_speed",
+            "server_intf", "client_intf", "traffictest_port", "traffictest_duration",
             "circuit_id", "isp",
         ])
         for did in device_ids:
@@ -799,12 +858,13 @@ def _start_run_for_devices(
                 continue
             writer.writerow([
                 d["spoke_ip"], d["hub_ip"], d["hub_mgmt_ip"], d["speed"],
+                d.get("accepted_speed") or "",
                 d["server_intf"], d["client_intf"], d["traffictest_port"],
+                d.get("traffictest_duration") or "",
                 d.get("circuit_id") or "", d.get("isp") or "",
             ])
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = UPLOAD_DIR / f"_render_{timestamp}_{job.id}.html"
+    output_path = REPORTS_DIR / f"{_report_basename(job.id)}.html"
 
     o = overrides
     settings = {
@@ -818,7 +878,7 @@ def _start_run_for_devices(
         hub_server_intf=o.get("hub_server_intf", ""),
         spoke_client_intf=o.get("spoke_client_intf", ""),
         traffictest_port=o.get("traffictest_port", ""),
-        traffictest_duration=int(o.get("traffictest_duration") or engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS),
+        traffictest_duration=int(o["traffictest_duration"]) if o.get("traffictest_duration") else None,
         hub_server_start_delay=float(o.get("hub_server_start_delay") or engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS),
         delay_seconds=int(o.get("delay_seconds") or 0),
         timeout=int(o["timeout"]) if int(o.get("timeout") or 0) > 0 else None,
@@ -842,7 +902,7 @@ async def devices_run(
     hub_server_intf: str = Form(""),
     spoke_client_intf: str = Form(""),
     traffictest_port: str = Form(""),
-    traffictest_duration: int = Form(engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS),
+    traffictest_duration: int | None = Form(None),
     hub_server_start_delay: float = Form(engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS),
     delay_seconds: int = Form(0),
     timeout: int = Form(0),
@@ -886,7 +946,7 @@ def archive_device(request: Request, device_id: int):
     target_mbps = engine.parse_speed_to_mbps(device.get("accepted_speed") or "")
     if target_mbps is None and device.get("speed"):
         spd = engine.parse_speed_to_mbps(device["speed"] or "")
-        target_mbps = round(spd * 0.90, 2) if spd is not None else None
+        target_mbps = round(spd * engine.DEFAULT_ACCEPT_RATIO, 2) if spd is not None else None
     chart_points = [
         {
             "run_id": r["id"],
@@ -915,24 +975,14 @@ def archive_device(request: Request, device_id: int):
     )
 
 
-_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9_-]+")
+def _report_basename(run_id: str) -> str:
+    """Report filename stem: ``SD-WAN_iPerf_<run-id>``.
 
-
-def _slug_for_filename(value: str) -> str:
-    cleaned = _FILENAME_SAFE_RE.sub("_", value or "").strip("_")
-    return cleaned[:60]
-
-
-def _report_filename_base(run: dict[str, Any]) -> str:
-    started = run.get("started_at") or ""
-    stamp = started.replace("T", "_").replace(":", "").replace("-", "")[:15]
-    if not stamp:
-        stamp = run.get("id") or "run"
-    base = f"Report_{stamp}"
-    schedule_slug = _slug_for_filename(run.get("schedule_name") or "")
-    if schedule_slug:
-        base = f"{schedule_slug}_{base}"
-    return base
+    The run id is itself a timestamp (``YYYYMMDD-HHMMSS``), so no separate
+    timestamp is appended. Used for both the files a live run writes to
+    ``reports/`` and the on-demand re-render download filenames.
+    """
+    return f"SD-WAN_iPerf_{run_id}"
 
 
 @app.get("/archive/run/{run_id}/render/{fmt}")
@@ -955,7 +1005,7 @@ def archive_render(run_id: str, fmt: str):
     runs_objs, summary, templates_list, delay = serialize.deserialize_runs(payload)
     input_path = Path(payload.get("input_name", "input.csv"))
 
-    download_base = _report_filename_base(run)
+    download_base = _report_basename(run["id"])
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         if fmt == "html":
@@ -997,8 +1047,13 @@ _DAYS = [(1, "Mon"), (2, "Tue"), (3, "Wed"), (4, "Thu"), (5, "Fri"), (6, "Sat"),
 _MONTHS = [(i, calendar.month_name[i]) for i in range(1, 13)]
 
 
-def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
-    """Validate and normalize a schedule form payload. Returns (values, error_or_None)."""
+def _parse_schedule_form(form: dict[str, Any], *, require_password: bool = True) -> tuple[dict[str, Any], str | None]:
+    """Validate and normalize a schedule form payload. Returns (values, error_or_None).
+
+    When ``require_password`` is False (editing an existing schedule), a blank
+    password is allowed and is simply omitted from the returned values so the
+    caller can preserve the already-stored credential.
+    """
     name = (form.get("name") or "").strip()
     pattern = (form.get("pattern") or "").strip()
     if not name:
@@ -1018,8 +1073,10 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
 
     sshuser = (form.get("sshuser") or "").strip()
     sshpw = form.get("sshpw") or ""
-    if not sshuser or not sshpw:
-        return {}, "SSH username and password are required."
+    if not sshuser:
+        return {}, "SSH username is required."
+    if require_password and not sshpw:
+        return {}, "SSH password is required."
 
     days_of_week = ""
     day_of_month: int | None = None
@@ -1076,7 +1133,7 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
         "hub_server_intf": form.get("hub_server_intf") or "",
         "spoke_client_intf": form.get("spoke_client_intf") or "",
         "traffictest_port": form.get("traffictest_port") or "",
-        "traffictest_duration": int(form.get("traffictest_duration") or engine.DEFAULT_TRAFFICTEST_DURATION_SECONDS),
+        "traffictest_duration": int(form["traffictest_duration"]) if form.get("traffictest_duration") else "",
         "hub_server_start_delay": float(form.get("hub_server_start_delay") or engine.DEFAULT_HUB_SERVER_START_DELAY_SECONDS),
         "delay_seconds": int(form.get("delay_seconds") or 0),
         "timeout": int(form.get("timeout") or 0),
@@ -1090,7 +1147,7 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
     )
     next_run_at = next_dt.isoformat(timespec="seconds") if next_dt else None
 
-    return {
+    values = {
         "name": name,
         "enabled": form.get("enabled", True),
         "pattern": pattern,
@@ -1100,10 +1157,14 @@ def _parse_schedule_form(form: dict[str, Any]) -> tuple[dict[str, Any], str | No
         "month_of_year": month_of_year,
         "device_ids": json.dumps(device_ids),
         "sshuser": sshuser,
-        "sshpw": sshpw,
         "overrides_json": json.dumps(overrides),
         "next_run_at": next_run_at,
-    }, None
+    }
+    # Only carry the password when one was entered; a blank field on edit means
+    # "keep the existing stored credential".
+    if sshpw:
+        values["sshpw"] = sshpw
+    return values, None
 
 
 @app.get("/schedules", response_class=HTMLResponse)
@@ -1141,7 +1202,7 @@ def schedules_page(request: Request, error: str = "", message: str = ""):
     )
 
 
-def _schedule_form_ctx(request: Request, schedule: dict | None, form: dict[str, Any] | None = None, error: str = "") -> dict[str, Any]:
+def _schedule_form_ctx(request: Request, schedule: dict | None, form: dict[str, Any] | None = None, error: str = "", is_edit: bool = False) -> dict[str, Any]:
     """Build the template ctx for the schedule edit form, optionally pre-filled from a failed POST."""
     devices = db.list_devices()
     selected_ids: list[int] = []
@@ -1179,7 +1240,8 @@ def _schedule_form_ctx(request: Request, schedule: dict | None, form: dict[str, 
             "pattern": form.get("pattern") or "daily",
             "run_time": run_time or "",
             "sshuser": form.get("sshuser") or "",
-            "sshpw": form.get("sshpw") or "",
+            # Never echo the password back into the page (kept out of the DOM).
+            "sshpw": "",
             "enabled": True,
             "day_of_month": int(form.get("day_of_month")) if str(form.get("day_of_month") or "").isdigit() else None,
             "month_of_year": int(form.get("month_of_year")) if str(form.get("month_of_year") or "").isdigit() else None,
@@ -1202,6 +1264,7 @@ def _schedule_form_ctx(request: Request, schedule: dict | None, form: dict[str, 
         "months_list": _MONTHS,
         "overrides": overrides,
         "error": error,
+        "is_edit": is_edit,
         "active_job_id": _active_job_id(),
         "defaults": {
             "hub_server_intf": engine.DEFAULT_HUB_SERVER_INTF,
@@ -1230,7 +1293,7 @@ def schedule_edit_form(request: Request, schedule_id: int):
     return templates.TemplateResponse(
         request,
         "schedule_edit.html",
-        _schedule_form_ctx(request, schedule=s),
+        _schedule_form_ctx(request, schedule=s, is_edit=True),
     )
 
 
@@ -1254,13 +1317,13 @@ async def schedule_create(request: Request):
 async def schedule_update(schedule_id: int, request: Request):
     form_data = await request.form()
     form = {k: form_data.getlist(k) if k in {"device_ids", "days"} else form_data.get(k) for k in form_data.keys()}
-    values, err = _parse_schedule_form(form)
+    values, err = _parse_schedule_form(form, require_password=False)
     if err:
         existing = db.get_schedule(schedule_id)
         return templates.TemplateResponse(
             request,
             "schedule_edit.html",
-            _schedule_form_ctx(request, schedule=existing, form=form, error=err),
+            _schedule_form_ctx(request, schedule=existing, form=form, error=err, is_edit=True),
             status_code=400,
         )
     db.update_schedule(schedule_id, values)

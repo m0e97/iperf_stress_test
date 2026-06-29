@@ -9,8 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-# secret_store sits at the repo root next to main.py
+# secret_store and clock sit at the repo root next to main.py
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import clock  # noqa: E402
 import secret_store  # noqa: E402
 
 _DB_LOCK = threading.RLock()
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS devices (
     server_intf TEXT DEFAULT '',
     client_intf TEXT DEFAULT '',
     traffictest_port TEXT DEFAULT '',
+    traffictest_duration TEXT DEFAULT '',
     circuit_id TEXT DEFAULT '',
     isp TEXT DEFAULT '',
     notes TEXT DEFAULT '',
@@ -113,6 +115,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN isp TEXT DEFAULT ''")
     if "accepted_speed" not in dev_cols:
         conn.execute("ALTER TABLE devices ADD COLUMN accepted_speed TEXT DEFAULT ''")
+    if "traffictest_duration" not in dev_cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN traffictest_duration TEXT DEFAULT ''")
 
     run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
     if "schedule_name" not in run_cols:
@@ -146,7 +150,7 @@ def _connect() -> Iterator[sqlite3.Connection]:
 
 DEVICE_COLUMNS = (
     "name", "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed", "accepted_speed",
-    "server_intf", "client_intf", "traffictest_port",
+    "server_intf", "client_intf", "traffictest_port", "traffictest_duration",
     "circuit_id", "isp", "notes",
 )
 
@@ -183,7 +187,7 @@ def find_device_by_spoke_hub(spoke_ip: str, hub_ip: str) -> dict[str, Any] | Non
 
 def create_device(values: dict[str, str]) -> int:
     payload = {col: (values.get(col) or "").strip() for col in DEVICE_COLUMNS}
-    payload["created_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["created_at"] = clock.now().isoformat(timespec="seconds")
     cols = list(payload.keys())
     placeholders = ",".join("?" for _ in cols)
     with _connect() as conn:
@@ -212,7 +216,7 @@ def delete_device(device_id: int) -> None:
 def upsert_devices_from_rows(rows: list[dict[str, str]]) -> tuple[int, int]:
     """Bulk-insert from CSV/XLSX-style rows. Returns (inserted, updated)."""
     inserted = updated = 0
-    now = datetime.now().isoformat(timespec="seconds")
+    now = clock.now().isoformat(timespec="seconds")
     with _connect() as conn:
         for row in rows:
             spoke = (row.get("spoke_ip") or "").strip()
@@ -333,6 +337,26 @@ def latest_run() -> dict[str, Any] | None:
     return r
 
 
+def last_run_health() -> dict[str, Any] | None:
+    """Pass/fail detail for the single most recent run only.
+
+    Returns the run metadata plus its per-site rows (each carrying the engine's
+    verdict in ``site_status``), so the dashboard can report the last run's
+    result distinctly from the fleet-wide device health.
+    """
+    with _connect() as conn:
+        run = conn.execute(
+            "SELECT id, started_at, status FROM runs ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        if not run:
+            return None
+        sites = conn.execute(
+            "SELECT throughput_mbps, site_status FROM run_sites WHERE run_id = ?",
+            (run["id"],),
+        ).fetchall()
+    return {"run": dict(run), "sites": [dict(s) for s in sites]}
+
+
 def recent_runs(limit: int = 6) -> list[dict[str, Any]]:
     return list_runs(limit=limit, include_archive_filename=False)
 
@@ -405,7 +429,7 @@ def _schedule_payload(values: dict[str, Any]) -> dict[str, Any]:
 
 def create_schedule(values: dict[str, Any]) -> int:
     payload = _schedule_payload(values)
-    payload["created_at"] = datetime.now().isoformat(timespec="seconds")
+    payload["created_at"] = clock.now().isoformat(timespec="seconds")
     cols = list(payload.keys())
     placeholders = ",".join("?" for _ in cols)
     with _connect() as conn:
@@ -418,6 +442,10 @@ def create_schedule(values: dict[str, Any]) -> int:
 
 def update_schedule(schedule_id: int, values: dict[str, Any]) -> None:
     payload = _schedule_payload(values)
+    # When no new password was supplied, leave the stored (encrypted) one intact
+    # rather than overwriting it with a blank.
+    if not values.get("sshpw"):
+        payload.pop("sshpw", None)
     assignments = ",".join(f"{col} = ?" for col in payload)
     with _connect() as conn:
         conn.execute(

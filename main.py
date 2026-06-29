@@ -20,6 +20,21 @@ from string import Formatter
 from typing import Any
 from xml.etree import ElementTree as ET
 
+import clock
+
+# Cooperative run cancellation. The web app assigns a callable here that returns
+# True when the user clicks "Stop"; the spoke loops check it between devices and
+# halt cleanly (the in-flight device finishes, no new ones start).
+_cancel_check = None
+
+
+def cancellation_requested() -> bool:
+    try:
+        return bool(_cancel_check and _cancel_check())
+    except Exception:
+        return False
+
+
 _PARAMIKO_IMPORT_ERROR: str = ""
 try:
     import paramiko as _paramiko_lib
@@ -45,7 +60,8 @@ DEFAULT_TRAFFICTEST_PORT = "5201"
 DEFAULT_HUB_SERVER_INTF = "Mobily"
 DEFAULT_SPOKE_CLIENT_INTF = "wan1"
 DEFAULT_HUB_SERVER_START_DELAY_SECONDS = 30.0
-DEFAULT_TRAFFICTEST_DURATION_SECONDS = 60
+# FortiGate's diagnose traffictest run uses a built-in 10s test when no -t is given.
+DEFAULT_TRAFFICTEST_DURATION_SECONDS = 10
 DEFAULT_SSH_TEMPLATE = 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new {target} "{remote_command}"'
 FORTIGATE_HUB_SETUP_COMMANDS = [
     "diagnose traffictest server-intf {hub_server_intf}",
@@ -55,7 +71,9 @@ FORTIGATE_HUB_SERVER_COMMAND = "diagnose traffictest run -s"
 FORTIGATE_SPOKE_COMMANDS = [
     "diagnose traffictest client-intf {spoke_client_intf}",
     "diagnose traffictest port {traffictest_port}",
-    "diagnose traffictest run -b {speed_with_margin} -c {hub_ip}",
+    # {duration_flag} resolves to " -t <seconds>" when a duration is set for the
+    # site, or "" otherwise (FortiGate then uses its built-in 10s default).
+    "diagnose traffictest run -b {speed_with_margin} -c {hub_ip}{duration_flag}",
 ]
 THROUGHPUT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGTP]?bits/sec)", re.IGNORECASE)
 ROLE_PATTERN = re.compile(r"\b(sender|receiver)\b", re.IGNORECASE)
@@ -101,6 +119,17 @@ SPEED_ALIASES = {
     "speed_mbps",
     "bandwidth_mbps",
 }
+ACCEPTED_SPEED_ALIASES = {
+    "accepted_speed",
+    "accepted_speed_mbps",
+    "acceptable_speed",
+    "min_speed",
+    "minimum_speed",
+    "threshold_speed",
+}
+# Fraction of the configured speed a site must reach to pass, used when no
+# per-device accepted_speed is set. Overridable per device via accepted_speed.
+DEFAULT_ACCEPT_RATIO = 0.90
 HUB_SERVER_INTF_ALIASES = {
     "hub_server_intf",
     "server_intf",
@@ -122,6 +151,13 @@ TRAFFICTEST_PORT_ALIASES = {
     "traffic_port",
     "iperf_port",
     "test_port",
+}
+TRAFFICTEST_DURATION_ALIASES = {
+    "traffictest_duration",
+    "test_duration",
+    "duration",
+    "duration_seconds",
+    "traffic_duration",
 }
 CIRCUIT_ID_ALIASES = {
     "circuit_id",
@@ -153,10 +189,13 @@ class SiteDefinition:
     speed_mbps: float | None
     speed_with_margin_mbps: float | None
     speed_with_margin_label: str
+    accepted_speed: str = ""
+    accepted_speed_mbps: float | None = None
     hub_mgmt_ip: str = ""
     hub_server_intf: str = ""
     spoke_client_intf: str = ""
     traffictest_port: str = ""
+    traffictest_duration: str = ""
     hub_name: str = ""
     circuit_id: str = ""
     isp: str = ""
@@ -400,6 +439,15 @@ def format_mbps_for_traffictest(speed_mbps: float | None) -> str:
     return f"{rounded:g}M"
 
 
+def _sanitize_duration(value) -> str:
+    """Return a positive-integer seconds string, or "" when absent/invalid."""
+    try:
+        seconds = int(str(value).strip())
+    except (TypeError, ValueError):
+        return ""
+    return str(seconds) if seconds > 0 else ""
+
+
 def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
     sites: list[SiteDefinition] = []
     for index, row in enumerate(rows, start=1):
@@ -422,12 +470,15 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
         if hub_mgmt_ip:
             placeholders.setdefault("hub_mgmt_ip", hub_mgmt_ip)
         speed = find_first_value(placeholders, SPEED_ALIASES)
+        accepted_speed = find_first_value(placeholders, ACCEPTED_SPEED_ALIASES)
         hub_server_intf = find_first_value(placeholders, HUB_SERVER_INTF_ALIASES)
         spoke_client_intf = find_first_value(placeholders, SPOKE_CLIENT_INTF_ALIASES)
         traffictest_port = find_first_value(placeholders, TRAFFICTEST_PORT_ALIASES)
+        traffictest_duration = find_first_value(placeholders, TRAFFICTEST_DURATION_ALIASES)
         circuit_id = find_first_value(placeholders, CIRCUIT_ID_ALIASES)
         isp = find_first_value(placeholders, ISP_ALIASES)
         speed_mbps = parse_speed_to_mbps(speed)
+        accepted_speed_mbps = parse_speed_to_mbps(accepted_speed)
         speed_with_margin_mbps = round(speed_mbps * 1.15, 2) if speed_mbps is not None else None
         speed_with_margin_label = format_mbps_for_traffictest(speed_with_margin_mbps)
 
@@ -450,11 +501,14 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
                 hub_mgmt_ip=hub_mgmt_ip,
                 speed=speed,
                 speed_mbps=speed_mbps,
+                accepted_speed=accepted_speed,
+                accepted_speed_mbps=accepted_speed_mbps,
                 speed_with_margin_mbps=speed_with_margin_mbps,
                 speed_with_margin_label=speed_with_margin_label,
                 hub_server_intf=hub_server_intf,
                 spoke_client_intf=spoke_client_intf,
                 traffictest_port=traffictest_port,
+                traffictest_duration=traffictest_duration,
                 circuit_id=circuit_id,
                 isp=isp,
             )
@@ -588,9 +642,9 @@ def parse_firewall_name(output: str) -> str | None:
 
 
 def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResult:
-    started_at = datetime.now()
+    started_at = clock.now()
     if dry_run:
-        ended_at = datetime.now()
+        ended_at = clock.now()
         return CommandResult(
             template=command,
             command=command,
@@ -608,7 +662,7 @@ def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResu
         capture_output=True,
         timeout=timeout,
     )
-    ended_at = datetime.now()
+    ended_at = clock.now()
     combined_output = "\n".join(part for part in [completed.stdout, completed.stderr] if part)
     throughput_mbps, throughput_label, retransmissions, sender_mbps, receiver_mbps = extract_throughput(combined_output)
     return CommandResult(
@@ -651,7 +705,7 @@ def build_ssh_command_or_error(
     try:
         _, command = build_ssh_command(site, ssh_template, target, remote_template)
     except KeyError as error:
-        moment = datetime.now()
+        moment = clock.now()
         return None, CommandResult(
             template=remote_template,
             command="",
@@ -674,7 +728,7 @@ def run_rendered_command(
     try:
         result = run_command(command, timeout=timeout, dry_run=dry_run)
     except subprocess.TimeoutExpired as error:
-        ended_at = datetime.now()
+        ended_at = clock.now()
         return CommandResult(
             template=template,
             command=command,
@@ -695,14 +749,14 @@ def start_background_command(
     command: str,
     dry_run: bool,
 ) -> tuple[CommandResult, subprocess.Popen[str] | None]:
-    started_at = datetime.now()
+    started_at = clock.now()
     if dry_run:
         return (
             CommandResult(
                 template=template,
                 command=command,
                 started_at=started_at,
-                ended_at=datetime.now(),
+                ended_at=clock.now(),
                 return_code=0,
                 stdout="dry-run: background command not executed",
                 stderr="",
@@ -748,7 +802,7 @@ def finalize_background_command(
         stdout, stderr = process.communicate()
         stopped_after_test = True
 
-    ended_at = datetime.now()
+    ended_at = clock.now()
     return_code = 0 if stopped_after_test else process.returncode
     if stopped_after_test:
         stdout = "\n".join(
@@ -870,11 +924,11 @@ def _paramiko_exec(
     dry_run: bool,
 ) -> CommandResult:
     cmd_label = f"[paramiko] {_paramiko_user}@{host}: {remote_command}"
-    started_at = datetime.now()
+    started_at = clock.now()
     if dry_run:
         return CommandResult(
             template=template, command=cmd_label,
-            started_at=started_at, ended_at=datetime.now(),
+            started_at=started_at, ended_at=clock.now(),
             return_code=0, stdout="dry-run: command not executed", stderr="",
         )
     try:
@@ -887,13 +941,13 @@ def _paramiko_exec(
         stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
         rc = 0
     except Exception as exc:
-        ended_at = datetime.now()
+        ended_at = clock.now()
         return CommandResult(
             template=template, command=cmd_label,
             started_at=started_at, ended_at=ended_at,
             return_code=None, stdout="", stderr="", error=str(exc),
         )
-    ended_at = datetime.now()
+    ended_at = clock.now()
     throughput_mbps, throughput_label, retransmissions, sender_mbps, receiver_mbps = extract_throughput(stdout)
     return CommandResult(
         template=template, command=cmd_label,
@@ -913,12 +967,12 @@ def _paramiko_start_background(
     dry_run: bool,
 ) -> tuple[CommandResult, _ParamikoHandle | None]:
     cmd_label = f"[paramiko] {_paramiko_user}@{host}: {remote_command}"
-    started_at = datetime.now()
+    started_at = clock.now()
     if dry_run:
         return (
             CommandResult(
                 template=template, command=cmd_label,
-                started_at=started_at, ended_at=datetime.now(),
+                started_at=started_at, ended_at=clock.now(),
                 return_code=0, stdout="dry-run: background command not executed", stderr="",
             ),
             None,
@@ -968,7 +1022,7 @@ def _paramiko_hub_session(
     cmd_prefix = f"[paramiko] {_paramiko_user}@{ssh_target}: "
 
     if dry_run:
-        now = datetime.now()
+        now = clock.now()
         setup_results = [
             CommandResult(
                 template=t, command=cmd_prefix + render_template(t, rep_site),
@@ -989,7 +1043,7 @@ def _paramiko_hub_session(
         client = _paramiko_connect(ssh_target, timeout)
         shell = _paramiko_open_shell(client, timeout)
     except Exception as exc:
-        now = datetime.now()
+        now = clock.now()
         err_result = CommandResult(
             template=setup_templates[0] if setup_templates else server_template,
             command=cmd_prefix + "(connect)",
@@ -1007,19 +1061,19 @@ def _paramiko_hub_session(
     for template in setup_templates:
         rendered = render_template(template, rep_site)
         cmd_label = cmd_prefix + rendered
-        started_at = datetime.now()
+        started_at = clock.now()
         try:
             shell.send(rendered + "\n")
             raw = _shell_read_until_prompt(shell, timeout=timeout or 60)
             stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
-            ended_at = datetime.now()
+            ended_at = clock.now()
             setup_results.append(CommandResult(
                 template=template, command=cmd_label,
                 started_at=started_at, ended_at=ended_at,
                 return_code=0, stdout=stdout, stderr="",
             ))
         except Exception as exc:
-            ended_at = datetime.now()
+            ended_at = clock.now()
             setup_results.append(CommandResult(
                 template=template, command=cmd_label,
                 started_at=started_at, ended_at=ended_at,
@@ -1036,7 +1090,7 @@ def _paramiko_hub_session(
             pass
         server_initial = CommandResult(
             template=server_template, command=cmd_prefix + server_template,
-            started_at=datetime.now(), ended_at=datetime.now(),
+            started_at=clock.now(), ended_at=clock.now(),
             return_code=None, stdout="", stderr="",
             error="Skipped — hub setup failed.",
         )
@@ -1045,7 +1099,7 @@ def _paramiko_hub_session(
     # Start the server command on the same shell in a background thread.
     server_cmd_str = render_template(server_template, rep_site)
     cmd_label = cmd_prefix + server_cmd_str
-    started_at = datetime.now()
+    started_at = clock.now()
     handle = _ParamikoHandle()
     handle._shell = shell
     handle._client = client
@@ -1089,7 +1143,7 @@ def _paramiko_spoke_session(
     cmd_prefix = f"[paramiko] {_paramiko_user}@{host}: "
 
     if dry_run:
-        now = datetime.now()
+        now = clock.now()
         return [
             CommandResult(
                 template=t, command=cmd_prefix + render_template(t, site),
@@ -1103,7 +1157,7 @@ def _paramiko_spoke_session(
         client = _paramiko_connect(host, timeout)
         shell = _paramiko_open_shell(client, timeout)
     except Exception as exc:
-        now = datetime.now()
+        now = clock.now()
         return [CommandResult(
             template=templates[0] if templates else "",
             command=cmd_prefix + "(connect)",
@@ -1116,14 +1170,14 @@ def _paramiko_spoke_session(
         for i, template in enumerate(templates):
             rendered = render_template(template, site)
             cmd_label = cmd_prefix + rendered
-            started_at = datetime.now()
+            started_at = clock.now()
             # The last command is the traffictest run — wait indefinitely for it to finish.
             cmd_timeout = None if i == len(templates) - 1 else (timeout or 30)
             try:
                 shell.send(rendered + "\n")
                 raw = _shell_read_until_prompt(shell, timeout=cmd_timeout)
                 stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
-                ended_at = datetime.now()
+                ended_at = clock.now()
                 throughput_mbps, throughput_label, retransmissions, sender_mbps, receiver_mbps = extract_throughput(stdout)
                 results.append(CommandResult(
                     template=template, command=cmd_label,
@@ -1136,7 +1190,7 @@ def _paramiko_spoke_session(
                     receiver_throughput_mbps=receiver_mbps,
                 ))
             except Exception as exc:
-                ended_at = datetime.now()
+                ended_at = clock.now()
                 results.append(CommandResult(
                     template=template, command=cmd_label,
                     started_at=started_at, ended_at=ended_at,
@@ -1237,7 +1291,7 @@ def render_command_or_error(
     try:
         command = render_template(template, site)
     except KeyError as error:
-        moment = datetime.now()
+        moment = clock.now()
         return None, CommandResult(
             template=template,
             command="",
@@ -1281,7 +1335,7 @@ def run_site(
     dry_run: bool,
     name_discovery_result: CommandResult | None = None,
 ) -> SiteRun:
-    started_at = datetime.now()
+    started_at = clock.now()
     results: list[CommandResult] = []
 
     for template in command_templates:
@@ -1291,7 +1345,7 @@ def run_site(
             continue
         results.append(run_rendered_command(template, command, timeout=timeout, dry_run=dry_run))
 
-    ended_at = datetime.now()
+    ended_at = clock.now()
     return SiteRun(
         site=site,
         started_at=started_at,
@@ -1306,7 +1360,7 @@ def run_fortigate_spoke_only(
     args: argparse.Namespace,
     name_discovery_result: CommandResult | None = None,
 ) -> SiteRun:
-    started_at = datetime.now()
+    started_at = clock.now()
 
     if _use_paramiko:
         results = _paramiko_spoke_session(site, FORTIGATE_SPOKE_COMMANDS, args.timeout, args.dry_run)
@@ -1317,7 +1371,7 @@ def run_fortigate_spoke_only(
                 _exec_ssh(site, site.ip_address, remote_template, args.ssh_template, args.timeout, args.dry_run)
             )
 
-    ended_at = datetime.now()
+    ended_at = clock.now()
     return SiteRun(
         site=site,
         started_at=started_at,
@@ -1355,7 +1409,11 @@ def format_peak(value: float | None) -> str:
     return f"{value:.2f} Mbps"
 
 
-def _render_command_block(result: CommandResult, heading: str = "Template") -> str:
+def _render_command_block(
+    result: CommandResult,
+    heading: str = "Template",
+    status_override: tuple[str, str] | None = None,
+) -> str:
     output_text = "\n".join(
         section
         for section in [
@@ -1378,8 +1436,6 @@ def _render_command_block(result: CommandResult, heading: str = "Template") -> s
           <div><strong>{heading}:</strong> <code>{template}</code></div>
           <div><strong>Command:</strong> <code>{command}</code></div>
           <div><strong>Status:</strong> <span class="badge {status_class}">{status}</span></div>
-          <div><strong>Return Code:</strong> {return_code}</div>
-          <div><strong>Started:</strong> {started}</div>
           <div><strong>Duration:</strong> {duration}</div>
           {throughput_line}
           {retr_line}
@@ -1389,10 +1445,8 @@ def _render_command_block(result: CommandResult, heading: str = "Template") -> s
         heading=html.escape(heading),
         template=html.escape(result.template),
         command=html.escape(result.command or "N/A"),
-        status=html.escape(result.status),
-        status_class=html.escape(result.status),
-        return_code=html.escape(str(result.return_code) if result.return_code is not None else "N/A"),
-        started=html.escape(format_timestamp(result.started_at)),
+        status=html.escape(status_override[0] if status_override else result.status),
+        status_class=html.escape(status_override[1] if status_override else result.status),
         duration=html.escape(format_seconds(result.duration_seconds)),
         throughput_line=throughput_line,
         retr_line=retr_line,
@@ -1406,16 +1460,45 @@ def _hub_display(site: SiteDefinition) -> str:
     return site.hub_ip or "N/A"
 
 
+def accepted_threshold_mbps(site: SiteDefinition) -> float | None:
+    """Throughput a site must reach to pass.
+
+    Uses the device's explicit accepted_speed when set, otherwise falls back to
+    DEFAULT_ACCEPT_RATIO (90%) of the configured speed.
+    """
+    if site.accepted_speed_mbps is not None:
+        return site.accepted_speed_mbps
+    if site.speed_mbps is not None:
+        return round(site.speed_mbps * DEFAULT_ACCEPT_RATIO, 2)
+    return None
+
+
 def _compute_result(site_run: SiteRun) -> tuple[str, str]:
-    """Return (result_label, css_class) for a site run based on the 95% bandwidth threshold."""
+    """Return (result_label, css_class) for a site run based on the accepted threshold."""
     sender_mbps = site_run.max_sender_throughput_mbps
-    speed_mbps = site_run.site.speed_mbps
-    if sender_mbps is not None and speed_mbps is not None and sender_mbps >= 0.95 * speed_mbps:
+    threshold_mbps = accepted_threshold_mbps(site_run.site)
+    if sender_mbps is not None and threshold_mbps is not None and sender_mbps >= threshold_mbps:
         return "Pass", "success"
     elif sender_mbps is None:
         return "Fail (not reachable)", "failed"
     else:
         return "Fail (insufficient speed)", "failed"
+
+
+def _ssh_reachable(site_run: SiteRun) -> tuple[str, str]:
+    """Return (label, css_class) indicating whether the SSH connection succeeded.
+
+    Primary signal is the name-discovery step (the first SSH attempt against the
+    spoke); if that wasn't run, fall back to whether any command executed without
+    a connection/transport error.
+    """
+    ndr = site_run.name_discovery_result
+    if ndr is not None:
+        return ("Yes", "success") if ndr.error is None else ("No", "failed")
+    if site_run.command_results:
+        reachable = any(r.error is None for r in site_run.command_results)
+        return ("Yes", "success") if reachable else ("No", "failed")
+    return ("N/A", "skipped")
 
 
 def build_html_report(
@@ -1426,7 +1509,7 @@ def build_html_report(
     delay_seconds: int,
 ) -> str:
     summary = summarize(results)
-    created_at = datetime.now()
+    created_at = clock.now()
 
     rows_html: list[str] = []
     details_html: list[str] = []
@@ -1463,10 +1546,16 @@ def build_html_report(
             )
         )
 
+        reach_label, reach_class = _ssh_reachable(site_run)
+
         command_blocks: list[str] = []
         for result in site_run.command_results:
             if "traffictest run" in result.command:
-                command_blocks.append(_render_command_block(result))
+                # The Status badge here reflects whether the device speed passed
+                # the test (the accepted-speed threshold), not the raw command exit.
+                command_blocks.append(
+                    _render_command_block(result, status_override=(result_label, result_class))
+                )
 
         sender_line = (
             f'<p><strong>Sender Throughput:</strong> {html.escape(format_peak(site_run.max_sender_throughput_mbps))}</p>'
@@ -1496,7 +1585,7 @@ def build_html_report(
               <p><strong>Hub IP:</strong> {hub_ip}</p>
               <p><strong>Configured Speed:</strong> {speed}</p>
               <p><strong>Test Bandwidth (+15%):</strong> {test_speed}</p>
-              <p><strong>Status:</strong> <span class="badge {status_class}">{status}</span></p>
+              <p><strong>Reachable:</strong> <span class="badge {status_class}">{status}</span></p>
               {sender_line}
               {receiver_line}
               {retr_line}
@@ -1510,8 +1599,8 @@ def build_html_report(
                 hub_ip=html.escape(_hub_display(site_run.site)),
                 speed=html.escape(site_run.site.speed or "N/A"),
                 test_speed=html.escape(site_run.site.speed_with_margin_label or "N/A"),
-                status=html.escape(site_run.status),
-                status_class=html.escape(site_run.status),
+                status=html.escape(reach_label),
+                status_class=html.escape(reach_class),
                 sender_line=sender_line,
                 receiver_line=receiver_line,
                 retr_line=retr_line,
@@ -1543,6 +1632,8 @@ def build_html_report(
       --template-error: #b26b00;
       --skipped: #52606d;
       --accent: #8c3d2b;
+      --accent-dark: #6e2f20;
+      --accent-soft: rgba(140, 61, 43, 0.08);
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -1550,72 +1641,92 @@ def build_html_report(
       font-family: "Segoe UI", Tahoma, sans-serif;
       background: linear-gradient(180deg, #f4efe7 0%, #fcfaf6 100%);
       color: var(--text);
-      line-height: 1.5;
+      line-height: 1.55;
     }}
     main {{
       max-width: 1200px;
       margin: 0 auto;
-      padding: 32px 20px 48px;
+      padding: 36px 24px 56px;
     }}
-    h1, h2 {{ margin-top: 0; }}
-    .hero, .summary, .site-card {{
+    h1 {{ margin: 0 0 4px; font-size: 1.6rem; font-weight: 700; color: var(--accent-dark); }}
+    h2 {{ margin: 0 0 14px; font-size: 1.1rem; font-weight: 600; color: var(--accent-dark); }}
+    .hero {{
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 24px;
-      box-shadow: 0 10px 24px rgba(31, 41, 51, 0.06);
+      border-top: 4px solid var(--accent);
+      border-radius: 12px;
+      padding: 28px 32px;
+      box-shadow: 0 2px 12px rgba(27,191,191,0.07);
+      margin-bottom: 20px;
+    }}
+    .summary, .site-card {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px 28px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
       margin-bottom: 20px;
     }}
     .summary-grid {{
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 12px;
+      gap: 14px;
       margin: 16px 0;
     }}
     .metric {{
-      background: #faf6f0;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 14px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(27,191,191,0.25);
+      border-radius: 10px;
+      padding: 16px;
     }}
     .metric-label {{
       color: var(--muted);
-      font-size: 0.9rem;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 600;
     }}
     .metric-value {{
-      font-size: 1.35rem;
+      font-size: 1.6rem;
       font-weight: 700;
+      color: var(--accent-dark);
+      margin-top: 4px;
     }}
     table {{
       width: 100%;
       border-collapse: collapse;
       margin-top: 16px;
-      font-size: 0.95rem;
+      font-size: 0.92rem;
     }}
     th {{
-      background: #f4efe7;
+      background: rgba(92,45,110,0.07);
+      color: var(--accent-dark);
       font-weight: 600;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }}
     th, td {{
-      padding: 10px 12px;
+      padding: 10px 14px;
       border-bottom: 1px solid var(--border);
       text-align: left;
       vertical-align: middle;
     }}
+    tbody tr:hover {{ background: var(--accent-soft); }}
     tr:last-child td {{ border-bottom: none; }}
     code, pre {{
       font-family: "SFMono-Regular", Consolas, monospace;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
     }}
     pre {{
       white-space: pre-wrap;
       word-break: break-word;
-      background: #fbf8f3;
+      background: #f0f4f8;
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 12px;
+      border-radius: 8px;
+      padding: 14px;
       overflow-x: auto;
-      margin-top: 8px;
+      margin-top: 10px;
     }}
     .command-block {{
       padding-top: 14px;
@@ -1624,10 +1735,11 @@ def build_html_report(
     }}
     .badge {{
       display: inline-block;
-      padding: 2px 10px;
+      padding: 3px 12px;
       border-radius: 999px;
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       font-weight: 700;
+      letter-spacing: 0.03em;
     }}
     .success {{ color: #fff; background: var(--success); }}
     .failed {{ color: #fff; background: var(--failed); }}
@@ -1635,22 +1747,18 @@ def build_html_report(
     .skipped {{ color: #fff; background: var(--skipped); }}
     .muted {{ color: var(--muted); }}
     ul {{ margin: 0; padding-left: 20px; }}
-    .summary-grid .metric {{ cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; }}
-    .summary-grid .metric:hover {{ box-shadow: 0 0 0 2px var(--accent); }}
-    .summary-grid .metric.active {{ box-shadow: 0 0 0 3px var(--accent); background: var(--accent); color: #fff; }}
-    .summary-grid .metric.active .metric-label, .summary-grid .metric.active .metric-value {{ color: #fff; }}
+    .summary-grid .metric {{ cursor: pointer; transition: box-shadow 0.15s, transform 0.1s; }}
+    .summary-grid .metric:hover {{ box-shadow: 0 0 0 2px var(--accent); transform: translateY(-1px); }}
+    .summary-grid .metric.active {{ box-shadow: 0 0 0 3px var(--accent); background: var(--accent); }}
+    .summary-grid .metric.active .metric-label {{ color: rgba(255,255,255,0.8); }}
+    .summary-grid .metric.active .metric-value {{ color: #fff; }}
   </style>
 </head>
 <body>
   <main>
     <section class="hero">
-      <h1>FortiGate Traffic Test Report</h1>
+      <h1>SD-WAN iPerf Traffic Test Report</h1>
       <p class="muted">Generated at {html.escape(format_timestamp(created_at))}</p>
-      <p><strong>Input File:</strong> {html.escape(str(input_path))}</p>
-      <p><strong>Report File:</strong> {html.escape(str(output_path))}</p>
-      <p><strong>Inter-site Delay:</strong> {delay_seconds} seconds</p>
-      <p><strong>Command Templates:</strong></p>
-      <ul>{command_list}</ul>
     </section>
 
     <section class="summary">
@@ -1954,10 +2062,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--traffictest-duration",
         type=int,
-        default=DEFAULT_TRAFFICTEST_DURATION_SECONDS,
+        default=None,
         help=(
-            "Duration in seconds for each spoke traffic test (-t flag passed to "
-            f"diagnose traffictest run). Default: {DEFAULT_TRAFFICTEST_DURATION_SECONDS}."
+            "Run-wide test duration in seconds, appended as '-t <n>' to the spoke "
+            "'diagnose traffictest run' command. A per-device traffictest_duration "
+            "column overrides this. If neither is set, no -t is sent and FortiGate "
+            f"uses its built-in {DEFAULT_TRAFFICTEST_DURATION_SECONDS}s default."
         ),
     )
     parser.add_argument(
@@ -2381,7 +2491,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     else:
         reports_dir = Path("Reports").resolve()
         reports_dir.mkdir(exist_ok=True)
-        output_path = reports_dir / f"traffic_test_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        output_path = reports_dir / f"traffic_test_report_{clock.now().strftime('%Y%m%d_%H%M%S')}.html"
 
     if not input_path.exists():
         parser.error(f"Input file not found: {input_path}")
@@ -2441,7 +2551,15 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         site.placeholders["spoke_client_intf"] = site.spoke_client_intf
         site.placeholders["traffictest_port"] = site.traffictest_port
         site.placeholders["traffic_port"] = site.traffictest_port
-        site.placeholders["traffictest_duration"] = str(args.traffictest_duration)
+        # Test duration: per-device value wins, else the run-wide --traffictest-duration
+        # if one was supplied. A blank/invalid value means no -t (FortiGate default 10s).
+        site.traffictest_duration = _sanitize_duration(site.traffictest_duration) or (
+            _sanitize_duration(args.traffictest_duration) if args.traffictest_duration else ""
+        )
+        site.placeholders["traffictest_duration"] = site.traffictest_duration
+        site.placeholders["duration_flag"] = (
+            f" -t {site.traffictest_duration}" if site.traffictest_duration else ""
+        )
 
     command_templates = load_command_templates(args)
     use_builtin_traffictest = not command_templates
@@ -2486,6 +2604,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
             "traffictest_port",
             "traffic_port",
             "traffictest_duration",
+            "duration_flag",
         }
     )
     validate_template_fields(active_command_templates, available_placeholders)
@@ -2635,7 +2754,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                     print("All hubs failed to connect — aborting.", flush=True)
                     if _gui_msg_queue is not None:
                         _gui_msg_queue.put(("error_dialog", "Hub Connection Failed", msg))
-                    now = datetime.now()
+                    now = clock.now()
                     runs = []
                     for site in sites:
                         runs.append(SiteRun(site=site, started_at=now, ended_at=now))
@@ -2671,6 +2790,18 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         all_runs: list[SiteRun] = []
         all_runs_lock = threading.Lock()
         print_lock = threading.Lock()
+        # Shared, global completion counter across all hub queues. Emitted at
+        # column 0 as "[done/total] ..." so the webapp progress parser (which is
+        # anchored at the start of the line) can follow overall progress.
+        progress_lock = threading.Lock()
+        progress = {"done": 0}
+
+        def _emit_progress(message: str) -> None:
+            with progress_lock:
+                progress["done"] += 1
+                done = progress["done"]
+            with print_lock:
+                print(f"[{done}/{total_sites}] {message}", flush=True)
 
         def _run_hub_queue(hub_ip: str, spoke_sites: list[SiteDefinition]) -> None:
             ctx = hub_contexts.get(hub_ip, {})
@@ -2680,14 +2811,23 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                         f"  [Hub {hub_ip}] Hub setup failed — skipping all {len(spoke_sites)} spoke(s).",
                         flush=True,
                     )
-                now = datetime.now()
+                now = clock.now()
                 with all_runs_lock:
                     for site in spoke_sites:
                         all_runs.append(SiteRun(site=site, started_at=now, ended_at=now))
+                for site in spoke_sites:
+                    _emit_progress(f"Skipped '{site.display_name}' (hub setup failed)")
                 return
 
             queue_size = len(spoke_sites)
             for q_index, site in enumerate(spoke_sites, start=1):
+                if cancellation_requested():
+                    with print_lock:
+                        print(
+                            f"  [Hub {hub_ip}] Stop requested — halting remaining spoke(s).",
+                            flush=True,
+                        )
+                    break
                 with print_lock:
                     print(
                         f"  [Hub {hub_ip}] [{q_index}/{queue_size}] Discovering name"
@@ -2716,7 +2856,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                             f" — SSH connection failed: {name_result.error}",
                             flush=True,
                         )
-                    now = datetime.now()
+                    now = clock.now()
                     site_run = SiteRun(
                         site=site,
                         started_at=now,
@@ -2743,6 +2883,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
 
                 with all_runs_lock:
                     all_runs.append(site_run)
+                _emit_progress(f"Completed '{site.display_name}' ({site.ip_address or 'no-ip'})")
 
         print(f"Running spoke tests across {len(hub_queues)} hub queue(s) in parallel...", flush=True)
         queue_threads = [
@@ -2795,6 +2936,9 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
 
         # Run sites sequentially.
         for index, site in enumerate(sites, start=1):
+            if cancellation_requested():
+                print("Stop requested — halting remaining site(s).", flush=True)
+                break
             print(f"[{index}/{total_sites}] Discovering firewall name ({site.ip_address or 'no-ip'})", flush=True)
             name_result, discovered_name = discover_firewall_name(
                 site,

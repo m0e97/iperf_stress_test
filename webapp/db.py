@@ -512,6 +512,53 @@ def runs_for_device(device_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def list_isps() -> list[dict[str, Any]]:
+    """Distinct non-empty ISP names with how many devices each has."""
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT TRIM(isp) AS isp, COUNT(*) AS device_count
+               FROM devices
+               WHERE TRIM(COALESCE(isp, '')) != ''
+               GROUP BY TRIM(isp)
+               ORDER BY TRIM(isp)"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def isp_run_rows(isp: str, start_iso: str, end_iso: str) -> list[dict[str, Any]]:
+    """Every per-site test result for devices of one ISP within [start, end).
+
+    Joins run_sites to devices and runs so the caller can score each test
+    against the device's contracted speed over the chosen window.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT d.id AS device_id, d.name, d.spoke_ip, d.circuit_id,
+                      d.speed, d.accepted_speed, d.hub_ip,
+                      rs.throughput_mbps, rs.site_status,
+                      r.id AS run_id, r.started_at
+               FROM devices d
+               JOIN run_sites rs ON rs.device_id = d.id
+               JOIN runs r ON r.id = rs.run_id
+               WHERE TRIM(d.isp) = TRIM(?)
+                 AND r.started_at >= ? AND r.started_at < ?
+               ORDER BY d.spoke_ip, r.started_at""",
+            (isp, start_iso, end_iso),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def devices_for_isp(isp: str) -> list[dict[str, Any]]:
+    """All devices belonging to one ISP (so the report can list never-tested ones too)."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, spoke_ip, circuit_id, speed, accepted_speed, hub_ip "
+            "FROM devices WHERE TRIM(isp) = TRIM(?) ORDER BY spoke_ip",
+            (isp,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def dashboard_stats() -> dict[str, Any]:
     """Aggregate stats for the home dashboard."""
     with _connect() as conn:

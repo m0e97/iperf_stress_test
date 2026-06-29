@@ -13,7 +13,7 @@ import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,7 @@ sys.path.insert(0, str(ROOT))
 import clock  # noqa: E402
 import main as engine  # noqa: E402
 
-from webapp import db, report_archive, scheduler, serialize  # noqa: E402
+from webapp import db, isp_report, report_archive, scheduler, serialize  # noqa: E402
 
 db.init_db(DB_PATH)
 
@@ -933,6 +933,88 @@ def archive_page(request: Request):
         request,
         "archive.html",
         {"runs": runs, "active_job_id": _active_job_id()},
+    )
+
+
+_ISP_RANGE_PRESETS = {
+    "7d": ("Last 7 days", 7),
+    "30d": ("Last 30 days", 30),
+    "90d": ("Last 90 days", 90),
+    "180d": ("Last 180 days", 180),
+    "365d": ("Last 12 months", 365),
+}
+
+
+def _isp_window(range_key: str, start: str, end: str) -> tuple[datetime, datetime]:
+    """Resolve the report window. Custom start/end (YYYY-MM-DD) win when provided."""
+    now = clock.now()
+    if range_key == "custom" and start:
+        try:
+            s = datetime.strptime(start, "%Y-%m-%d")
+            e = datetime.strptime(end, "%Y-%m-%d") if end else now
+            # include the whole end day
+            e = e.replace(hour=23, minute=59, second=59)
+            return s, e
+        except ValueError:
+            pass
+    days = _ISP_RANGE_PRESETS.get(range_key, _ISP_RANGE_PRESETS["30d"])[1]
+    return now - timedelta(days=days), now
+
+
+@app.get("/isp-report", response_class=HTMLResponse)
+def isp_report_page(request: Request, isp: str = "", range: str = "30d",
+                    start: str = "", end: str = "", sla: float = 90.0):
+    isps = db.list_isps()
+    report = None
+    if isp:
+        win_start, win_end = _isp_window(range, start, end)
+        report = isp_report.compute_isp_report(isp, win_start, win_end, sla)
+    return templates.TemplateResponse(
+        request,
+        "isp_report.html",
+        {
+            "isps": isps,
+            "report": report,
+            "sel_isp": isp,
+            "sel_range": range,
+            "sel_start": start,
+            "sel_end": end,
+            "sel_sla": sla,
+            "range_presets": _ISP_RANGE_PRESETS,
+            "active_job_id": _active_job_id(),
+        },
+    )
+
+
+@app.get("/isp-report/export/{fmt}")
+def isp_report_export(fmt: str, isp: str, range: str = "30d", start: str = "",
+                      end: str = "", sla: float = 90.0):
+    fmt = fmt.lower()
+    if fmt not in {"html", "xlsx", "pdf"}:
+        raise HTTPException(status_code=400, detail="Unsupported format. Use html, xlsx, or pdf.")
+    if not isp:
+        raise HTTPException(status_code=400, detail="isp is required.")
+    win_start, win_end = _isp_window(range, start, end)
+    report = isp_report.compute_isp_report(isp, win_start, win_end, sla)
+    safe_isp = re.sub(r"[^A-Za-z0-9_-]+", "_", isp).strip("_") or "ISP"
+    base = f"ISP_Compliance_{safe_isp}_{win_start.strftime('%Y%m%d')}-{win_end.strftime('%Y%m%d')}"
+    if fmt == "html":
+        return Response(
+            content=isp_report.render_html(report), media_type="text/html",
+            headers={"Content-Disposition": f'inline; filename="{base}.html"'},
+        )
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / f"{base}.{fmt}"
+        if fmt == "xlsx":
+            isp_report.build_excel(report, out)
+            media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else:
+            isp_report.build_pdf(report, out)
+            media = "application/pdf"
+        data = out.read_bytes()
+    return Response(
+        content=data, media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{base}.{fmt}"'},
     )
 
 

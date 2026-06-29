@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}ISP Compliance Report — FortiGate Traffic Test Runner{% endblock %}
+{% block content %}
+<style>
+  .isp-form { display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end; }
+  .isp-form label { display:flex; flex-direction:column; gap:4px; font-size:0.85em; color:var(--muted); }
+  .isp-form select, .isp-form input { min-width:130px; }
+  .isp-cards { display:flex; gap:14px; flex-wrap:wrap; margin:18px 0 6px; }
+  .isp-card { background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:12px 16px; min-width:140px; }
+  .isp-card .label { color:var(--muted); font-size:0.72em; text-transform:uppercase; letter-spacing:0.05em; }
+  .isp-card .value { font-size:1.6em; font-weight:700; line-height:1.2; }
+  .cpill { display:inline-block; padding:2px 9px; border-radius:20px; font-weight:700; font-size:0.85em; }
+  .cpill.ok { background:#dcf3e8; color:#0e7a4a; } .value.ok { color:#0e7a4a; }
+  .cpill.warn { background:#fbf0d5; color:#b8860b; } .value.warn { color:#b8860b; }
+  .cpill.bad { background:#f8dcd8; color:#c0392b; } .value.bad { color:#c0392b; }
+  .cpill.na { background:#eceff3; color:var(--muted); }
+  .isp-sub { color:var(--muted); font-size:0.82em; }
+  .num { text-align:right; }
+  [data-theme="dark"] .cpill.ok { background:rgba(14,122,74,0.22); }
+  [data-theme="dark"] .cpill.warn { background:rgba(184,134,11,0.22); }
+  [data-theme="dark"] .cpill.bad { background:rgba(192,57,43,0.22); }
+</style>
+
+<section class="card">
+    <h1>ISP Compliance Report</h1>
+    <p class="muted">Pick an ISP and a time window. Each historic test is scored against your SLA target
+    (% of the device's contracted speed) so you can see, per circuit, how often the link met or missed the contract.</p>
+
+    {% if not isps %}
+    <div class="empty-state">
+        <div class="empty-icon">▤</div>
+        <h3>No ISPs found</h3>
+        <p>Add an <code>isp</code> value to your devices first (device details or import).</p>
+        <div class="actions"><a class="button" href="/devices">Go to Devices</a></div>
+    </div>
+    {% else %}
+    <form class="isp-form" method="get" action="/isp-report" id="isp-form">
+        <label>ISP
+            <select name="isp" required>
+                <option value="">— choose —</option>
+                {% for o in isps %}
+                <option value="{{ o.isp }}" {% if o.isp == sel_isp %}selected{% endif %}>{{ o.isp }} ({{ o.device_count }})</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>Time window
+            <select name="range" id="range-sel">
+                {% for key, val in range_presets.items() %}
+                <option value="{{ key }}" {% if key == sel_range %}selected{% endif %}>{{ val[0] }}</option>
+                {% endfor %}
+                <option value="custom" {% if sel_range == 'custom' %}selected{% endif %}>Custom…</option>
+            </select>
+        </label>
+        <label>From <input type="date" name="start" value="{{ sel_start }}"></label>
+        <label>To <input type="date" name="end" value="{{ sel_end }}"></label>
+        <label>SLA target %
+            <input type="number" name="sla" min="1" max="100" step="1" value="{{ sel_sla | int }}" style="width:90px;">
+        </label>
+        <button type="submit">Build report</button>
+    </form>
+    {% endif %}
+</section>
+
+{% if report %}
+{% set sla = report.sla_pct %}
+{% macro ccls(p) %}{% if p is none %}na{% elif p >= sla %}ok{% elif p >= sla * 0.8 %}warn{% else %}bad{% endif %}{% endmacro %}
+
+<section class="card">
+    <div class="page-toolbar" style="margin-bottom:6px;">
+        <h2 style="margin:0;">{{ report.isp }}</h2>
+        <span style="white-space:nowrap;">
+            <a class="button secondary" href="/isp-report/export/html?isp={{ report.isp | urlencode }}&range={{ sel_range }}&start={{ sel_start }}&end={{ sel_end }}&sla={{ sel_sla | int }}" target="_blank">↓ HTML</a>
+            <a class="button secondary" href="/isp-report/export/xlsx?isp={{ report.isp | urlencode }}&range={{ sel_range }}&start={{ sel_start }}&end={{ sel_end }}&sla={{ sel_sla | int }}">↓ Excel</a>
+            <a class="button secondary" href="/isp-report/export/pdf?isp={{ report.isp | urlencode }}&range={{ sel_range }}&start={{ sel_start }}&end={{ sel_end }}&sla={{ sel_sla | int }}">↓ PDF</a>
+        </span>
+    </div>
+    <p class="isp-sub">Window {{ report.start.strftime("%Y-%m-%d") }} → {{ report.end.strftime("%Y-%m-%d") }}
+        · SLA target {{ sla | int }}% of contracted speed · generated {{ report.generated_at.strftime("%Y-%m-%d %H:%M") }}</p>
+
+    <div class="isp-cards">
+        <div class="isp-card"><div class="label">Overall compliance</div>
+            <div class="value {{ ccls(report.overall_compliance_pct) | trim }}">{{ report.overall_compliance_pct if report.overall_compliance_pct is not none else "—" }}{% if report.overall_compliance_pct is not none %}%{% endif %}</div></div>
+        <div class="isp-card"><div class="label">Devices (with data)</div>
+            <div class="value">{{ report.devices_with_data }}<span style="font-size:0.5em;color:var(--muted);"> / {{ report.total_devices }}</span></div></div>
+        <div class="isp-card"><div class="label">Tests scored</div><div class="value">{{ report.total_tests }}</div></div>
+        <div class="isp-card"><div class="label">Met</div><div class="value ok">{{ report.total_met }}</div></div>
+        <div class="isp-card"><div class="label">Not met</div><div class="value bad">{{ report.total_not_met }}</div></div>
+    </div>
+
+    {% if report.worst_performers %}
+    <p class="isp-sub" style="margin-top:14px;"><strong>Lowest compliance:</strong>
+        {% for d in report.worst_performers %}
+        <span class="cpill {{ ccls(d.compliance_pct) | trim }}" style="margin-right:6px;">{{ d.name or d.spoke_ip }} {{ d.compliance_pct }}%</span>
+        {% endfor %}
+    </p>
+    {% endif %}
+</section>
+
+<section class="card">
+    {% if not report.devices %}
+    <p class="muted">No devices found for this ISP.</p>
+    {% else %}
+    <div class="table-wrap">
+    <table class="reports">
+        <thead>
+            <tr>
+                <th>Device</th><th>Circuit</th><th>Contract</th><th class="num">SLA thr.</th>
+                <th class="num">Tests</th><th class="num">Met</th><th class="num">Not met</th>
+                <th class="num">Compliance</th><th class="num">Avg Mbps</th><th class="num">Min / Max</th>
+                <th class="num">Avg % contract</th><th>Last test</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for d in report.devices %}
+            <tr>
+                <td>{{ d.name or d.spoke_ip }}<div class="isp-sub"><code>{{ d.spoke_ip }}</code></div></td>
+                <td>{{ d.circuit_id or "—" }}</td>
+                <td>{{ d.speed or "—" }}{% if not d.contract_known %} <span class="isp-sub">(no speed)</span>{% endif %}</td>
+                <td class="num">{{ d.threshold_mbps if d.threshold_mbps is not none else "—" }}</td>
+                <td class="num">{{ d.total_tests }}</td>
+                <td class="num" style="color:#0e7a4a;">{{ d.met }}</td>
+                <td class="num" style="color:#c0392b;">{{ d.not_met }}</td>
+                <td class="num"><span class="cpill {{ ccls(d.compliance_pct) | trim }}">{{ d.compliance_pct if d.compliance_pct is not none else "N/A" }}{% if d.compliance_pct is not none %}%{% endif %}</span></td>
+                <td class="num">{{ d.avg_mbps if d.avg_mbps is not none else "—" }}</td>
+                <td class="num">{{ d.min_mbps if d.min_mbps is not none else "—" }} / {{ d.max_mbps if d.max_mbps is not none else "—" }}</td>
+                <td class="num">{{ d.avg_pct_of_contract ~ "%" if d.avg_pct_of_contract is not none else "—" }}</td>
+                <td style="white-space:nowrap;">{{ (d.last_test or "")[:16].replace("T", " ") or "—" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <p class="isp-sub" style="margin-top:12px;">Ordered worst-compliance first. "Met" = sender throughput ≥ {{ sla | int }}% of contracted speed.
+    Devices with no contracted speed show N/A; devices with 0 tests had no runs in this window.</p>
+    {% endif %}
+</section>
+{% endif %}
+
+<script>
+(function () {
+    // Show the From/To inputs only when the window is Custom.
+    var sel = document.getElementById("range-sel");
+    if (!sel) return;
+    var fromL = document.querySelector('label input[name="start"]').closest("label");
+    var toL = document.querySelector('label input[name="end"]').closest("label");
+    function toggle() {
+        var custom = sel.value === "custom";
+        fromL.style.display = custom ? "" : "none";
+        toL.style.display = custom ? "" : "none";
+    }
+    sel.addEventListener("change", toggle);
+    toggle();
+})();
+</script>
+{% endblock %}

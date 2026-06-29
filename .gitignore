@@ -1,19 +1,52 @@
+# --- Secrets / credentials ---
 credentials.json
 .secret.key
 *.secret.key
+.env
+.env.*
+
+# --- Python ---
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
-.claude/
-.DS_Store
-devices.csv
+.coverage
+htmlcov/
 .venv/
+venv/
+env/
+
+# --- App data / runtime ---
 data/
 dist/
+build/
 Reports/
+devices.csv
+
+# --- Generated reports (root) ---
 /*.html
 /*.xlsx
 /*.pdf
 traffic_test_report_*.html
 traffic_test_report_*.xlsx
 traffic_test_report_*.pdf
+
+# --- Generated deliverables (presentations / manuals) ---
+*.pptx
+*.docx
+
+# --- Editors / IDEs ---
+.claude/
+.idea/
+
+# --- VS Code (keep shared configs, ignore personal) ---
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+
+# --- OS / OneDrive cruft ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini

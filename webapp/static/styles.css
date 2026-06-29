@@ -295,12 +295,33 @@ button, .button {
     transition: background 0.1s;
 }
 button:hover, .button:hover { background: var(--accent-hover); }
-button.secondary {
+button.secondary, .button.secondary {
     background: transparent;
     color: var(--text);
     border: 1px solid var(--border-strong);
 }
-button.secondary:hover { background: var(--panel-2); }
+button.secondary:hover, .button.secondary:hover { background: var(--panel-2); }
+
+/* Bandwidth value + unit toggle (Mbps / Gbps) used in device add/edit forms */
+.bw-field { display: flex; align-items: stretch; gap: 8px; margin-top: 5px; }
+.bw-field .bw-number { flex: 1 1 auto; margin-top: 0; min-width: 0; }
+.bw-units { display: inline-flex; flex: none; }
+.bw-unit {
+    display: inline-flex;
+    align-items: center;
+    background: var(--panel-2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    padding: 0 14px;
+    font-size: 0.9em;
+    font-weight: 500;
+    border-radius: 0;
+    cursor: pointer;
+}
+.bw-unit:first-child { border-radius: 6px 0 0 6px; }
+.bw-unit:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+.bw-unit:hover { background: var(--border); }
+.bw-unit.active, .bw-unit.active:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* --- Misc -------------------------------------------------------------- */
 

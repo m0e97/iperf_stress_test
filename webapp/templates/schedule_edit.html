@@ -107,18 +107,23 @@
         <fieldset>
             <legend>SSH Credentials</legend>
             <label>SSH username <input type="text" name="sshuser" autocomplete="username" required value="{{ schedule.sshuser if schedule else '' }}"></label>
-            <label>SSH password <input type="password" name="sshpw" autocomplete="current-password" required value="{{ schedule.sshpw if schedule else '' }}"></label>
+            <label>SSH password
+                <input type="password" name="sshpw" autocomplete="new-password"
+                       {% if not is_edit %}required{% endif %}
+                       placeholder="{% if is_edit %}Leave blank to keep current password{% else %}Required{% endif %}">
+            </label>
+            {% if is_edit %}<p class="hint" style="margin:4px 0 0;color:var(--muted);font-size:0.85em;">The stored password is never shown. Enter a new one only to change it.</p>{% endif %}
         </fieldset>
 
         <fieldset>
             <legend>Overrides (optional)</legend>
             <div class="grid">
-                <label>Hub IP <input type="text" name="hub_ip" value="{{ overrides.hub_ip if overrides else '' }}"></label>
+                <label>Hub WAN IP <input type="text" name="hub_ip" value="{{ overrides.hub_ip if overrides else '' }}"></label>
                 <label>Hub management IP <input type="text" name="hub_mgmt_ip" value="{{ overrides.hub_mgmt_ip if overrides else '' }}"></label>
                 <label>Hub server interface <input type="text" name="hub_server_intf" placeholder="{{ defaults.hub_server_intf }}" value="{{ overrides.hub_server_intf if overrides else '' }}"></label>
                 <label>Spoke client interface <input type="text" name="spoke_client_intf" placeholder="{{ defaults.spoke_client_intf }}" value="{{ overrides.spoke_client_intf if overrides else '' }}"></label>
                 <label>Traffictest port <input type="text" name="traffictest_port" placeholder="{{ defaults.traffictest_port }}" value="{{ overrides.traffictest_port if overrides else '' }}"></label>
-                <label>Traffictest duration (s) <input type="number" name="traffictest_duration" value="{{ overrides.traffictest_duration if overrides else defaults.traffictest_duration }}" min="1"></label>
+                <label>Traffictest duration (s) <input type="number" name="traffictest_duration" value="{{ overrides.traffictest_duration if overrides and overrides.traffictest_duration else '' }}" min="1" placeholder="per-device / default 10s"></label>
                 <label>Hub server start delay (s) <input type="number" step="0.1" name="hub_server_start_delay" value="{{ overrides.hub_server_start_delay if overrides else defaults.hub_server_start_delay }}" min="0"></label>
                 <label>Delay between spokes (s) <input type="number" name="delay_seconds" value="{{ overrides.delay_seconds if overrides else 0 }}" min="0"></label>
                 <label>Per-command timeout (s, 0 = none) <input type="number" name="timeout" value="{{ overrides.timeout if overrides else 0 }}" min="0"></label>

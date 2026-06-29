@@ -43,15 +43,10 @@
                     <th style="width:32px;"><input type="checkbox" id="select-all" aria-label="Select all"></th>
                     <th>Name</th>
                     <th>Spoke IP</th>
-                    <th>Hub</th>
+                    <th>Hub WAN IP</th>
                     <th>Circuit ID</th>
                     <th>ISP</th>
                     <th>BW</th>
-                    <th>Accepted Speed</th>
-                    <th>Hub Mgmt IP</th>
-                    <th>Server intf</th>
-                    <th>Client intf</th>
-                    <th>Port</th>
                     <th>Last run</th>
                     <th>Runs</th>
                     <th></th>
@@ -67,19 +62,6 @@
                     <td>{{ d.circuit_id or "—" }}</td>
                     <td>{{ d.isp or "—" }}</td>
                     <td><strong>{{ d.speed or "—" }}</strong></td>
-                    <td style="font-size:0.9em;">
-                        {% if d.accepted_speed %}
-                            {{ d.accepted_speed }}
-                        {% elif d.speed %}
-                            <span class="muted">auto</span>
-                        {% else %}
-                            —
-                        {% endif %}
-                    </td>
-                    <td style="color:var(--muted);font-size:0.85em;">{{ d.hub_mgmt_ip or "—" }}</td>
-                    <td style="color:var(--muted);font-size:0.85em;">{{ d.server_intf or "—" }}</td>
-                    <td style="color:var(--muted);font-size:0.85em;">{{ d.client_intf or "—" }}</td>
-                    <td style="color:var(--muted);font-size:0.85em;">{{ d.traffictest_port or "—" }}</td>
                     <td style="color:var(--muted);font-size:0.82em;white-space:nowrap;">{{ d.last_run or "—" }}</td>
                     <td style="text-align:center;">{{ d.run_count }}</td>
                     <td style="white-space:nowrap;">
@@ -114,12 +96,12 @@
                 <fieldset>
                     <legend>Overrides (optional)</legend>
                     <div class="grid">
-                        <label>Hub IP <input type="text" name="hub_ip"></label>
+                        <label>Hub WAN IP <input type="text" name="hub_ip"></label>
                         <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip"></label>
                         <label>Hub server intf <input type="text" name="hub_server_intf" placeholder="{{ defaults.hub_server_intf }}"></label>
                         <label>Spoke client intf <input type="text" name="spoke_client_intf" placeholder="{{ defaults.spoke_client_intf }}"></label>
                         <label>Traffictest port <input type="text" name="traffictest_port" placeholder="{{ defaults.traffictest_port }}"></label>
-                        <label>Duration (s) <input type="number" name="traffictest_duration" value="{{ defaults.traffictest_duration }}" min="1"></label>
+                        <label>Duration (s) <input type="number" name="traffictest_duration" min="1" placeholder="per-device / default 10s"></label>
                         <label>Hub start delay (s) <input type="number" step="0.1" name="hub_server_start_delay" value="{{ defaults.hub_server_start_delay }}" min="0"></label>
                         <label>Delay between spokes (s) <input type="number" name="delay_seconds" value="0" min="0"></label>
                         <label>Per-command timeout (s) <input type="number" name="timeout" value="0" min="0"></label>
@@ -167,15 +149,25 @@
             <div class="grid">
                 <label>Name <input type="text" name="name" placeholder="e.g. FW-Riyadh-01"></label>
                 <label>Spoke IP <input type="text" name="spoke_ip" required placeholder="10.1.1.1"></label>
-                <label>Hub IP <input type="text" name="hub_ip" required placeholder="10.0.0.1"></label>
+                <label>Hub WAN IP <input type="text" name="hub_ip" required placeholder="10.0.0.1"></label>
                 <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip" placeholder="optional"></label>
                 <label>Circuit ID <input type="text" name="circuit_id"></label>
                 <label>ISP <input type="text" name="isp"></label>
-                <label>BW <input type="text" name="speed" placeholder="100M"></label>
+                <label>BW
+                    <span class="bw-field">
+                        <input type="text" class="bw-number" inputmode="decimal" placeholder="100" autocomplete="off" data-initial="">
+                        <span class="bw-units" role="group" aria-label="Bandwidth unit">
+                            <button type="button" class="bw-unit" data-unit="Mbps">Mbps</button>
+                            <button type="button" class="bw-unit" data-unit="Gbps">Gbps</button>
+                        </span>
+                    </span>
+                    <input type="hidden" name="speed" class="bw-speed">
+                </label>
                 <label>Accepted Speed <input type="text" name="accepted_speed" placeholder="auto (90% of BW)"></label>
                 <label>Server intf <input type="text" name="server_intf"></label>
                 <label>Client intf <input type="text" name="client_intf"></label>
                 <label>Traffictest port <input type="text" name="traffictest_port"></label>
+                <label>Test duration (s) <input type="number" name="traffictest_duration" min="1" placeholder="default 10s"></label>
             </div>
             <label>Notes <input type="text" name="notes"></label>
         </div>

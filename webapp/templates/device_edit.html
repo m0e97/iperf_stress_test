@@ -7,15 +7,25 @@
         <div class="grid">
             <label>Name <input type="text" name="name" value="{{ device.name or '' }}"></label>
             <label>Spoke IP <input type="text" name="spoke_ip" value="{{ device.spoke_ip }}" required></label>
-            <label>Hub IP <input type="text" name="hub_ip" value="{{ device.hub_ip }}" required></label>
+            <label>Hub WAN IP <input type="text" name="hub_ip" value="{{ device.hub_ip }}" required></label>
             <label>Hub mgmt IP <input type="text" name="hub_mgmt_ip" value="{{ device.hub_mgmt_ip or '' }}"></label>
             <label>Circuit ID <input type="text" name="circuit_id" value="{{ device.circuit_id or '' }}"></label>
             <label>ISP <input type="text" name="isp" value="{{ device.isp or '' }}"></label>
-            <label>BW <input type="text" name="speed" value="{{ device.speed or '' }}"></label>
+            <label>BW
+                <span class="bw-field">
+                    <input type="text" class="bw-number" inputmode="decimal" placeholder="100" autocomplete="off" data-initial="{{ device.speed or '' }}">
+                    <span class="bw-units" role="group" aria-label="Bandwidth unit">
+                        <button type="button" class="bw-unit" data-unit="Mbps">Mbps</button>
+                        <button type="button" class="bw-unit" data-unit="Gbps">Gbps</button>
+                    </span>
+                </span>
+                <input type="hidden" name="speed" class="bw-speed">
+            </label>
             <label>Accepted Speed <input type="text" name="accepted_speed" value="{{ device.accepted_speed or '' }}" placeholder="auto (90% of BW)"></label>
             <label>Server intf <input type="text" name="server_intf" value="{{ device.server_intf or '' }}"></label>
             <label>Client intf <input type="text" name="client_intf" value="{{ device.client_intf or '' }}"></label>
             <label>Traffictest port <input type="text" name="traffictest_port" value="{{ device.traffictest_port or '' }}"></label>
+            <label>Test duration (s) <input type="number" name="traffictest_duration" min="1" value="{{ device.traffictest_duration or '' }}" placeholder="default 10s"></label>
         </div>
         <label>Notes <input type="text" name="notes" value="{{ device.notes or '' }}"></label>
         <button type="submit">Save</button>

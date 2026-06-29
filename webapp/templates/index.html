@@ -56,6 +56,28 @@ a.dash-card:hover { border-color: var(--accent); }
 .dash-pill.ok  { background: rgba(34,197,94,0.15);  color: var(--ok); }
 .dash-pill.err { background: rgba(239,68,68,0.15);  color: var(--err); }
 .dash-pill.dim { background: var(--panel-2); color: var(--muted); }
+.dash-pill .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    margin-right: 5px;
+    flex: none;
+}
+/* Proportional pass/fail/untested health bar for the Devices card */
+.dev-health {
+    display: flex;
+    height: 8px;
+    width: 100%;
+    border-radius: 999px;
+    overflow: hidden;
+    background: var(--panel-2);
+    margin: -2px 0 12px;
+}
+.dev-health .seg { height: 100%; transition: flex-grow 0.2s; }
+.dev-health .seg.ok  { background: var(--ok); }
+.dev-health .seg.err { background: var(--err); }
+.dev-health .seg.dim { background: var(--muted); opacity: 0.3; }
 details > summary { list-style: none; }
 details > summary::-webkit-details-marker { display: none; }
 details > summary::marker { display: none; }
@@ -83,13 +105,20 @@ details[open] .quick-run-toggle .arrow { transform: rotate(90deg); }
     <a class="dash-card" href="/devices">
         <div class="dash-label">Devices</div>
         <div class="dash-value">{{ stats.total_devices }}</div>
+        {% if stats.total_devices > 0 %}
+        <div class="dev-health" title="{{ device_pass }} passing · {{ device_fail }} failing · {{ device_untested }} untested">
+            {% if device_pass > 0 %}<span class="seg ok" style="flex:{{ device_pass }}"></span>{% endif %}
+            {% if device_fail > 0 %}<span class="seg err" style="flex:{{ device_fail }}"></span>{% endif %}
+            {% if device_untested > 0 %}<span class="seg dim" style="flex:{{ device_untested }}"></span>{% endif %}
+        </div>
+        {% endif %}
         <div class="dash-sub">
             {% if stats.total_devices == 0 %}
                 <span>Add devices →</span>
             {% else %}
-                {% if device_pass > 0 %}<span class="dash-pill ok">{{ device_pass }} passing</span>{% endif %}
-                {% if device_fail > 0 %}<span class="dash-pill err">{{ device_fail }} failing</span>{% endif %}
-                {% if device_untested > 0 %}<span class="dash-pill dim">{{ device_untested }} untested</span>{% endif %}
+                {% if device_pass > 0 %}<span class="dash-pill ok"><i class="dot"></i>{{ device_pass }} passing</span>{% endif %}
+                {% if device_fail > 0 %}<span class="dash-pill err"><i class="dot"></i>{{ device_fail }} failing</span>{% endif %}
+                {% if device_untested > 0 %}<span class="dash-pill dim"><i class="dot"></i>{{ device_untested }} untested</span>{% endif %}
             {% endif %}
         </div>
     </a>
@@ -108,12 +137,25 @@ details[open] .quick-run-toggle .arrow { transform: rotate(90deg); }
 
     {% set tested = device_pass + device_fail %}
     <div class="dash-card">
-        <div class="dash-label">Pass Rate (last run)</div>
+        <div class="dash-label">Device Pass Rate</div>
         {% if tested > 0 %}
         <div class="dash-value {% if device_fail == 0 %}ok{% elif device_pass == 0 %}err{% endif %}">
             {{ ((device_pass / tested) * 100) | round | int }}%
         </div>
-        <div class="dash-sub">{{ device_pass }} / {{ tested }} devices</div>
+        <div class="dash-sub">{{ device_pass }} / {{ tested }} devices · latest result each</div>
+        {% else %}
+        <div class="dash-value" style="font-size:1.5em;color:var(--muted);">No data</div>
+        <div class="dash-sub">Run a test first</div>
+        {% endif %}
+    </div>
+
+    <div class="dash-card">
+        <div class="dash-label">Last Run</div>
+        {% if last_run_total > 0 %}
+        <div class="dash-value {% if last_run_pass == last_run_total %}ok{% elif last_run_pass == 0 %}err{% endif %}">
+            {{ ((last_run_pass / last_run_total) * 100) | round | int }}%
+        </div>
+        <div class="dash-sub">{{ last_run_pass }} / {{ last_run_total }} devices in last run</div>
         {% else %}
         <div class="dash-value" style="font-size:1.5em;color:var(--muted);">No data</div>
         <div class="dash-sub">Run a test first</div>
@@ -144,7 +186,7 @@ details[open] .quick-run-toggle .arrow { transform: rotate(90deg); }
         <tbody>
             {% for run in stats.recent_runs %}
             <tr>
-                <td><code style="font-size:0.82em;color:var(--muted);">{{ run.id[:8] }}</code></td>
+                <td><code style="font-size:0.82em;color:var(--muted);">{{ run.id }}</code></td>
                 <td style="white-space:nowrap;color:var(--muted);font-size:0.85em;">{{ (run.started_at or "")[:16] | replace("T"," ") }}</td>
                 <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ run.input_name or run.source or "—" }}</td>
                 <td>
@@ -203,12 +245,12 @@ details[open] .quick-run-toggle .arrow { transform: rotate(90deg); }
             <fieldset>
                 <legend>Overrides (optional)</legend>
                 <div class="grid">
-                    <label>Hub IP (applies to all rows) <input type="text" name="hub_ip"></label>
+                    <label>Hub WAN IP (applies to all rows) <input type="text" name="hub_ip"></label>
                     <label>Hub management IP <input type="text" name="hub_mgmt_ip"></label>
                     <label>Hub server interface <input type="text" name="hub_server_intf" placeholder="{{ defaults.hub_server_intf }}"></label>
                     <label>Spoke client interface <input type="text" name="spoke_client_intf" placeholder="{{ defaults.spoke_client_intf }}"></label>
                     <label>Traffictest port <input type="text" name="traffictest_port" placeholder="{{ defaults.traffictest_port }}"></label>
-                    <label>Traffictest duration (s) <input type="number" name="traffictest_duration" value="{{ defaults.traffictest_duration }}" min="1"></label>
+                    <label>Traffictest duration (s) <input type="number" name="traffictest_duration" min="1" placeholder="per-device / default 10s"></label>
                     <label>Hub server start delay (s) <input type="number" step="0.1" name="hub_server_start_delay" value="{{ defaults.hub_server_start_delay }}" min="0"></label>
                     <label>Delay between spokes per hub (s) <input type="number" name="delay_seconds" value="{{ defaults.delay_seconds }}" min="0"></label>
                     <label>Per-command timeout (s, 0 = none) <input type="number" name="timeout" value="0" min="0"></label>

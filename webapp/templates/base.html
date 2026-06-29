@@ -292,15 +292,66 @@
 (function () {
     const clockEl = document.getElementById("app-clock");
     if (!clockEl) return;
-    const TZ = "Asia/Riyadh";
+    // Drive the clock from the server-configured timezone offset so it matches
+    // run ids, reports, and stored timestamps (default GMT+3).
+    const OFFSET_H = Number("{{ app_tz_offset_hours | default(3) }}");
+    const OFFSET_MS = OFFSET_H * 3600 * 1000;
+    const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const pad = n => String(n).padStart(2, "0");
+    function tzLabel() {
+        if (OFFSET_H === 0) return "GMT";
+        const sign = OFFSET_H > 0 ? "+" : "-";
+        const abs = Math.abs(OFFSET_H);
+        return "GMT" + sign + (Number.isInteger(abs) ? abs : abs.toFixed(1).replace(/\.0$/, ""));
+    }
     function updateClock() {
-        const now = new Date();
-        const date = now.toLocaleDateString("en-GB", { timeZone: TZ, day: "2-digit", month: "short", year: "numeric" });
-        const time = now.toLocaleTimeString("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-        clockEl.innerHTML = '<span class="app-clock-date">' + date + '</span><span class="app-clock-time">' + time + '</span><span class="app-clock-tz">GMT+3</span>';
+        // Shift the UTC instant by the configured offset, then read UTC fields so
+        // the displayed wall-clock is the app timezone regardless of browser locale.
+        const d = new Date(Date.now() + OFFSET_MS);
+        const date = pad(d.getUTCDate()) + " " + MONTHS[d.getUTCMonth()] + " " + d.getUTCFullYear();
+        const time = pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()) + ":" + pad(d.getUTCSeconds());
+        clockEl.innerHTML = '<span class="app-clock-date">' + date + '</span><span class="app-clock-time">' + time + '</span><span class="app-clock-tz">' + tzLabel() + '</span>';
     }
     updateClock();
     setInterval(updateClock, 1000);
+})();
+</script>
+
+<script>
+// Bandwidth value + Mbps/Gbps unit toggle. Initializes any .bw-field widget on
+// the page (device add modal, device edit form). The visible number input is
+// combined with the chosen unit into the hidden name="speed" field on change.
+(function () {
+    document.querySelectorAll(".bw-field").forEach(function (field) {
+        var number = field.querySelector(".bw-number");
+        var buttons = Array.prototype.slice.call(field.querySelectorAll(".bw-unit"));
+        var hidden = (field.closest("label") || document).querySelector(".bw-speed");
+        if (!number || !hidden || !buttons.length) return;
+        var unit = "Mbps";
+
+        function sync() {
+            var v = (number.value || "").trim();
+            hidden.value = v ? v + unit : "";
+        }
+        function setUnit(u) {
+            unit = u;
+            buttons.forEach(function (b) { b.classList.toggle("active", b.dataset.unit === u); });
+            sync();
+        }
+
+        // Prefill number + unit from an existing speed string (edit form).
+        var initial = (number.dataset.initial || "").trim();
+        if (initial) {
+            var m = initial.match(/[\d.]+/);
+            if (m) number.value = m[0];
+            unit = /g/i.test(initial) ? "Gbps" : "Mbps";
+        }
+        buttons.forEach(function (b) {
+            b.addEventListener("click", function () { setUnit(b.dataset.unit); });
+        });
+        number.addEventListener("input", sync);
+        setUnit(unit);
+    });
 })();
 </script>
 </body>

@@ -18,6 +18,12 @@
         · Status <span id="status" class="badge">{{ job.status }}</span>
     </p>
 
+    {% if job.status in ("running", "pending") %}
+    <div id="run-controls" style="margin:4px 0 14px;">
+        <button type="button" id="stop-btn" class="button secondary" style="border-color:var(--err);color:var(--err);">⏹ Stop run</button>
+    </div>
+    {% endif %}
+
     {% if devices_for_run %}
     <p class="muted" style="margin-top:0;">
         Targets:
@@ -32,10 +38,10 @@
     <div id="results" hidden style="margin-top:18px;">
         <h2 style="margin:0 0 12px;">Download Reports</h2>
         <div id="report-list" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;"></div>
-        <p class="muted" style="margin:0;">
-            <a href="/">Start another run</a>
-            {% if job.source == "devices" %} · <a href="/devices">Back to devices</a>{% endif %}
-        </p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <a href="/" class="button secondary">↻ Start another run</a>
+            {% if job.source == "devices" %}<a href="/devices" class="button secondary">← Back to devices</a>{% endif %}
+        </div>
     </div>
 </section>
 
@@ -46,6 +52,17 @@
     const statusEl = document.getElementById("status");
     const resultsEl = document.getElementById("results");
     const reportListEl = document.getElementById("report-list");
+    const stopBtn = document.getElementById("stop-btn");
+    const controlsEl = document.getElementById("run-controls");
+
+    if (stopBtn) {
+        stopBtn.addEventListener("click", function () {
+            if (!confirm("Stop this run? The device currently testing will finish, then the run halts.")) return;
+            stopBtn.disabled = true;
+            stopBtn.textContent = "Stopping…";
+            fetch(`/run/${jobId}/stop`, { method: "POST" }).catch(() => {});
+        });
+    }
 
     const source = new EventSource(`/run/${jobId}/stream`);
     source.onmessage = function (event) {
@@ -54,9 +71,11 @@
     };
     source.addEventListener("end", function () {
         source.close();
+        if (controlsEl) controlsEl.hidden = true;
         fetch(`/run/${jobId}/status`).then(r => r.json()).then(data => {
             statusEl.textContent = data.status + (data.exit_code !== null ? ` (exit ${data.exit_code})` : "");
-            statusEl.classList.add(data.status === "done" && data.exit_code === 0 ? "ok" : "err");
+            const cls = (data.status === "done" && data.exit_code === 0) ? "ok" : (data.status === "cancelled" ? "" : "err");
+            if (cls) statusEl.classList.add(cls);
             reportListEl.innerHTML = "";
             if (data.reports && data.reports.length) {
                 for (const r of data.reports) {

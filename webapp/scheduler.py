@@ -8,6 +8,7 @@ import threading
 from datetime import datetime, timedelta
 from typing import Callable
 
+import clock
 from webapp import db
 
 log = logging.getLogger("scheduler")
@@ -29,7 +30,7 @@ def compute_next_run(
     from_time: datetime | None = None,
 ) -> datetime | None:
     """Return the next fire time for a schedule, or None if the schedule is exhausted."""
-    now = from_time or datetime.now()
+    now = from_time or clock.now()
 
     if pattern == "once":
         try:
@@ -105,7 +106,7 @@ def _fire_one(
     """Attempt to fire one schedule. Updates DB with outcome and next_run_at."""
     sid = schedule["id"]
     name = schedule["name"]
-    now = datetime.now()
+    now = clock.now()
 
     try:
         device_ids = [int(x) for x in json.loads(schedule["device_ids"]) if str(x).isdigit() or isinstance(x, int)]
@@ -170,7 +171,7 @@ def start(start_run_callable: Callable[..., tuple[bool, str, str | None]]) -> th
         log.info("Scheduler poller started (interval=%.0fs)", POLL_INTERVAL)
         while not stop_event.is_set():
             try:
-                now_iso = datetime.now().isoformat(timespec="seconds")
+                now_iso = clock.now().isoformat(timespec="seconds")
                 due = db.due_schedules(now_iso)
                 for s in due:
                     _fire_one(s, start_run_callable=start_run_callable)

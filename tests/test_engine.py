@@ -70,14 +70,15 @@ def _run(speed_mbps, sender_mbps, **cmd_kw) -> SiteRun:
 
 # --- _compute_result -----------------------------------------------------
 
-def test_result_pass_when_at_least_95_percent():
-    # 96 >= 0.95 * 100 -> Pass
-    label, css = engine._compute_result(_run(100.0, 96.0))
+def test_result_pass_when_at_least_90_percent():
+    # 91 >= 0.90 * 100 -> Pass
+    label, css = engine._compute_result(_run(100.0, 91.0))
     assert (label, css) == ("Pass", "success")
 
 
-def test_result_pass_exactly_at_threshold():
-    label, css = engine._compute_result(_run(100.0, 95.0))
+def test_result_pass_exactly_at_default_threshold():
+    # 90 >= 0.90 * 100 -> Pass
+    label, css = engine._compute_result(_run(100.0, 90.0))
     assert css == "success"
 
 
@@ -85,6 +86,32 @@ def test_result_fail_insufficient_speed():
     label, css = engine._compute_result(_run(100.0, 80.0))
     assert css == "failed"
     assert "insufficient" in label
+
+
+def test_result_uses_accepted_speed_override():
+    # accepted_speed=70 means 80 Mbps passes even though it is below 90% of 100
+    site = _site(100.0)
+    site.accepted_speed = "70M"
+    site.accepted_speed_mbps = 70.0
+    run = SiteRun(
+        site=site, started_at=datetime(2026, 6, 18, 10, 0, 0),
+        ended_at=datetime(2026, 6, 18, 10, 0, 0), command_results=[_cmd(80.0)],
+    )
+    label, css = engine._compute_result(run)
+    assert (label, css) == ("Pass", "success")
+
+
+def test_result_fail_below_accepted_speed_override():
+    # accepted_speed=95 makes 92 fail even though it clears the 90% default
+    site = _site(100.0)
+    site.accepted_speed = "95M"
+    site.accepted_speed_mbps = 95.0
+    run = SiteRun(
+        site=site, started_at=datetime(2026, 6, 18, 10, 0, 0),
+        ended_at=datetime(2026, 6, 18, 10, 0, 0), command_results=[_cmd(92.0)],
+    )
+    _, css = engine._compute_result(run)
+    assert css == "failed"
 
 
 def test_result_fail_not_reachable_when_no_throughput():
@@ -98,7 +125,7 @@ def test_result_fail_not_reachable_when_no_throughput():
 
 def test_summarize_counts_pass_and_fail():
     runs = [
-        _run(100.0, 96.0),   # pass
+        _run(100.0, 91.0),   # pass (>= 90% of 100)
         _run(100.0, 50.0),   # fail (insufficient)
         _run(100.0, None),   # fail (unreachable)
     ]
@@ -142,3 +169,56 @@ def test_command_status_failed_on_iperf_error_text():
 
 def test_command_status_failed_on_nonzero_return_code():
     assert _cmd(0.0, return_code=1, stdout="ok").status == "failed"
+
+
+# --- test duration / -t flag ---------------------------------------------
+
+def test_sanitize_duration():
+    assert engine._sanitize_duration("30") == "30"
+    assert engine._sanitize_duration(45) == "45"
+    assert engine._sanitize_duration("") == ""
+    assert engine._sanitize_duration("0") == ""        # not positive
+    assert engine._sanitize_duration("-5") == ""
+    assert engine._sanitize_duration("abc") == ""
+    assert engine._sanitize_duration(None) == ""
+
+
+def _render_run_command(site_duration: str, global_duration):
+    """Mirror main()'s per-site duration wiring, then render the run command."""
+    site = engine.build_sites(
+        [{"spoke_ip": "10.0.0.1", "hub_ip": "10.0.0.254", "speed": "100M",
+          "traffictest_duration": site_duration}]
+    )[0]
+    site.traffictest_duration = engine._sanitize_duration(site.traffictest_duration) or (
+        engine._sanitize_duration(global_duration) if global_duration else ""
+    )
+    site.placeholders["duration_flag"] = (
+        f" -t {site.traffictest_duration}" if site.traffictest_duration else ""
+    )
+    template = engine.FORTIGATE_SPOKE_COMMANDS[-1]
+    return template.format_map(engine.build_template_values(site, {}))
+
+
+def test_run_command_omits_t_when_no_duration():
+    cmd = _render_run_command("", None)
+    assert "-t" not in cmd
+    assert cmd.endswith("-c 10.0.0.254")
+
+
+def test_run_command_appends_t_from_device():
+    assert _render_run_command("30", None).endswith("-c 10.0.0.254 -t 30")
+
+
+def test_run_command_uses_global_duration_when_device_blank():
+    assert _render_run_command("", 20).endswith("-t 20")
+
+
+def test_run_command_device_duration_overrides_global():
+    assert _render_run_command("45", 20).endswith("-t 45")
+
+
+def test_build_sites_reads_duration_alias():
+    site = engine.build_sites(
+        [{"spoke_ip": "10.0.0.1", "hub_ip": "10.0.0.254", "speed": "100M", "duration": "15"}]
+    )[0]
+    assert site.traffictest_duration == "15"

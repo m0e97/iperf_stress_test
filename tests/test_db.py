@@ -124,6 +124,45 @@ def test_schedule_password_is_encrypted_at_rest(fresh_db):
     assert secret_store.is_fernet_token(raw)
 
 
+def test_update_schedule_blank_password_keeps_existing(fresh_db):
+    """Editing without a new password must preserve the stored credential."""
+    sid = db.create_schedule({
+        "name": "s", "enabled": True, "pattern": "daily", "run_time": "02:00",
+        "device_ids": "[]", "sshuser": "admin", "sshpw": "orig-pw",
+        "next_run_at": "2026-06-18T02:00:00",
+    })
+    # Update with no sshpw key at all (form left blank on edit).
+    db.update_schedule(sid, {
+        "name": "s", "enabled": True, "pattern": "daily", "run_time": "03:00",
+        "device_ids": "[]", "sshuser": "admin",
+        "next_run_at": "2026-06-18T03:00:00",
+    })
+    s = db.get_schedule(sid)
+    assert s["sshpw"] == "orig-pw"       # preserved
+    assert s["run_time"] == "03:00"      # other fields updated
+
+
+def test_update_schedule_new_password_replaces(fresh_db):
+    """Editing with a new password replaces it, still encrypted at rest."""
+    import secret_store
+
+    sid = db.create_schedule({
+        "name": "s", "enabled": True, "pattern": "daily", "run_time": "02:00",
+        "device_ids": "[]", "sshuser": "admin", "sshpw": "orig-pw",
+        "next_run_at": "2026-06-18T02:00:00",
+    })
+    db.update_schedule(sid, {
+        "name": "s", "enabled": True, "pattern": "daily", "run_time": "02:00",
+        "device_ids": "[]", "sshuser": "admin", "sshpw": "new-pw",
+        "next_run_at": "2026-06-18T02:00:00",
+    })
+    with db._connect() as conn:
+        raw = conn.execute("SELECT sshpw FROM schedules WHERE id = ?", (sid,)).fetchone()["sshpw"]
+    assert raw != "new-pw"
+    assert secret_store.is_fernet_token(raw)
+    assert db.get_schedule(sid)["sshpw"] == "new-pw"
+
+
 def test_disabled_schedule_not_due(fresh_db):
     db.create_schedule({
         "name": "off", "enabled": False, "pattern": "daily", "run_time": "02:00",

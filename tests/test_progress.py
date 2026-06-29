@@ -69,3 +69,22 @@ def test_indented_hub_marker_does_not_hijack_progress():
     job.append_line("  [Hub 10.0.0.1] [2/5] Running spoke")
     # The indented hub marker should be ignored; site progress stays at 1/3.
     assert (job.current_step, job.total_steps) == (1, 3)
+
+
+def test_parallel_mode_global_markers_drive_progress():
+    """Regression: in parallel hub-queue mode the engine emits indented per-hub
+    lines plus a column-0 '[done/total] Completed ...' marker per spoke. Only the
+    global markers should advance the bar, and it must reach total."""
+    job = _job()
+    stream = [
+        "Running spoke tests across 1 hub queue(s) in parallel...",
+        "  [Hub 10.0.0.1] [1/2] Discovering name (10.0.0.2)",
+        "  [Hub 10.0.0.1] [1/2] Running spoke '10.0.0.2' (10.0.0.2)",
+        "[1/2] Completed '10.0.0.2' (10.0.0.2)",
+        "  [Hub 10.0.0.1] [2/2] Running spoke '10.0.0.3' (10.0.0.3)",
+        "[2/2] Completed '10.0.0.3' (10.0.0.3)",
+    ]
+    for ln in stream:
+        job.append_line(ln)
+    assert (job.current_step, job.total_steps) == (2, 2)
+    assert "Completed" in job.current_message

@@ -966,7 +966,11 @@ def isp_report_page(request: Request, isp: str = "", range: str = "30d",
                     start: str = "", end: str = "", sla: float = 90.0):
     isps = db.list_isps()
     report = None
-    if isp:
+    all_summary = None
+    if isp == "__all__":
+        win_start, win_end = _isp_window(range, start, end)
+        all_summary = isp_report.compute_all_isps(win_start, win_end, sla)
+    elif isp:
         win_start, win_end = _isp_window(range, start, end)
         report = isp_report.compute_isp_report(isp, win_start, win_end, sla)
     return templates.TemplateResponse(
@@ -975,6 +979,7 @@ def isp_report_page(request: Request, isp: str = "", range: str = "30d",
         {
             "isps": isps,
             "report": report,
+            "all_summary": all_summary,
             "sel_isp": isp,
             "sel_range": range,
             "sel_start": start,
@@ -995,21 +1000,28 @@ def isp_report_export(fmt: str, isp: str, range: str = "30d", start: str = "",
     if not isp:
         raise HTTPException(status_code=400, detail="isp is required.")
     win_start, win_end = _isp_window(range, start, end)
-    report = isp_report.compute_isp_report(isp, win_start, win_end, sla)
-    safe_isp = re.sub(r"[^A-Za-z0-9_-]+", "_", isp).strip("_") or "ISP"
+    is_all = isp == "__all__"
+    if is_all:
+        data_obj = isp_report.compute_all_isps(win_start, win_end, sla)
+        safe_isp = "All_ISPs"
+        html_fn, xlsx_fn, pdf_fn = isp_report.render_all_html, isp_report.build_all_excel, isp_report.build_all_pdf
+    else:
+        data_obj = isp_report.compute_isp_report(isp, win_start, win_end, sla)
+        safe_isp = re.sub(r"[^A-Za-z0-9_-]+", "_", isp).strip("_") or "ISP"
+        html_fn, xlsx_fn, pdf_fn = isp_report.render_html, isp_report.build_excel, isp_report.build_pdf
     base = f"ISP_Compliance_{safe_isp}_{win_start.strftime('%Y%m%d')}-{win_end.strftime('%Y%m%d')}"
     if fmt == "html":
         return Response(
-            content=isp_report.render_html(report), media_type="text/html",
+            content=html_fn(data_obj), media_type="text/html",
             headers={"Content-Disposition": f'inline; filename="{base}.html"'},
         )
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / f"{base}.{fmt}"
         if fmt == "xlsx":
-            isp_report.build_excel(report, out)
+            xlsx_fn(data_obj, out)
             media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         else:
-            isp_report.build_pdf(report, out)
+            pdf_fn(data_obj, out)
             media = "application/pdf"
         data = out.read_bytes()
     return Response(

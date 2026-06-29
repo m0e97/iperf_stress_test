@@ -19,6 +19,12 @@
   [data-theme="dark"] .cpill.ok { background:rgba(14,122,74,0.22); }
   [data-theme="dark"] .cpill.warn { background:rgba(184,134,11,0.22); }
   [data-theme="dark"] .cpill.bad { background:rgba(192,57,43,0.22); }
+  .trend { display:flex; gap:10px; align-items:flex-end; }
+  .tbar { flex:1; display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .tbar-track { width:100%; max-width:64px; height:90px; background:var(--panel-2); border:1px solid var(--border); border-radius:5px; display:flex; align-items:flex-end; overflow:hidden; }
+  .tbar-fill { width:100%; border-radius:4px 4px 0 0; min-height:2px; }
+  .tbar-fill.ok { background:#0e7a4a; } .tbar-fill.warn { background:#b8860b; } .tbar-fill.bad { background:#c0392b; } .tbar-fill.na { background:#cbd2dc; }
+  .tval { font-weight:700; font-size:0.82em; } .tlbl { color:var(--muted); font-size:0.72em; }
 </style>
 
 <section class="card">
@@ -38,6 +44,7 @@
         <label>ISP
             <select name="isp" required>
                 <option value="">— choose —</option>
+                <option value="__all__" {% if sel_isp == '__all__' %}selected{% endif %}>★ All ISPs (comparison)</option>
                 {% for o in isps %}
                 <option value="{{ o.isp }}" {% if o.isp == sel_isp %}selected{% endif %}>{{ o.isp }} ({{ o.device_count }})</option>
                 {% endfor %}
@@ -61,9 +68,48 @@
     {% endif %}
 </section>
 
+{% macro ccls(p, sla) %}{% if p is none %}na{% elif p >= sla %}ok{% elif p >= sla * 0.8 %}warn{% else %}bad{% endif %}{% endmacro %}
+
+{% if all_summary %}
+{% set sla = all_summary.sla_pct %}
+<section class="card">
+    <div class="page-toolbar" style="margin-bottom:6px;">
+        <h2 style="margin:0;">All ISPs — comparison</h2>
+        <span style="white-space:nowrap;">
+            <a class="button secondary" href="/isp-report/export/html?isp=__all__&range={{ sel_range }}&start={{ sel_start }}&end={{ sel_end }}&sla={{ sel_sla | int }}" target="_blank">↓ HTML</a>
+            <a class="button secondary" href="/isp-report/export/xlsx?isp=__all__&range={{ sel_range }}&start={{ sel_start }}&end={{ sel_end }}&sla={{ sel_sla | int }}">↓ Excel</a>
+            <a class="button secondary" href="/isp-report/export/pdf?isp=__all__&range={{ sel_range }}&start={{ sel_start }}&end={{ sel_end }}&sla={{ sel_sla | int }}">↓ PDF</a>
+        </span>
+    </div>
+    <p class="isp-sub">Window {{ all_summary.start.strftime("%Y-%m-%d") }} → {{ all_summary.end.strftime("%Y-%m-%d") }}
+        · SLA target {{ sla | int }}% · overall {{ all_summary.overall_compliance_pct if all_summary.overall_compliance_pct is not none else "—" }}{% if all_summary.overall_compliance_pct is not none %}%{% endif %} · ranked best first</p>
+    {% if not all_summary.isps %}
+    <p class="muted">No ISPs found. Add an <code>isp</code> value to your devices first.</p>
+    {% else %}
+    <div class="table-wrap">
+    <table class="reports">
+        <thead><tr><th>ISP</th><th class="num">Devices (with data)</th><th class="num">Tests</th><th class="num">Met</th><th class="num">Not met</th><th class="num">Compliance</th><th></th></tr></thead>
+        <tbody>
+            {% for s in all_summary.isps %}
+            <tr>
+                <td><strong>{{ s.isp }}</strong></td>
+                <td class="num">{{ s.devices_with_data }} / {{ s.device_count }}</td>
+                <td class="num">{{ s.total_tests }}</td>
+                <td class="num" style="color:#0e7a4a;">{{ s.total_met }}</td>
+                <td class="num" style="color:#c0392b;">{{ s.total_not_met }}</td>
+                <td class="num"><span class="cpill {{ ccls(s.overall_compliance_pct, sla) | trim }}">{{ s.overall_compliance_pct if s.overall_compliance_pct is not none else "N/A" }}{% if s.overall_compliance_pct is not none %}%{% endif %}</span></td>
+                <td class="num"><a href="/isp-report?isp={{ s.isp | urlencode }}&range={{ sel_range }}&start={{ sel_start }}&end={{ sel_end }}&sla={{ sel_sla | int }}">details →</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+</section>
+{% endif %}
+
 {% if report %}
 {% set sla = report.sla_pct %}
-{% macro ccls(p) %}{% if p is none %}na{% elif p >= sla %}ok{% elif p >= sla * 0.8 %}warn{% else %}bad{% endif %}{% endmacro %}
 
 <section class="card">
     <div class="page-toolbar" style="margin-bottom:6px;">
@@ -79,7 +125,7 @@
 
     <div class="isp-cards">
         <div class="isp-card"><div class="label">Overall compliance</div>
-            <div class="value {{ ccls(report.overall_compliance_pct) | trim }}">{{ report.overall_compliance_pct if report.overall_compliance_pct is not none else "—" }}{% if report.overall_compliance_pct is not none %}%{% endif %}</div></div>
+            <div class="value {{ ccls(report.overall_compliance_pct, sla) | trim }}">{{ report.overall_compliance_pct if report.overall_compliance_pct is not none else "—" }}{% if report.overall_compliance_pct is not none %}%{% endif %}</div></div>
         <div class="isp-card"><div class="label">Devices (with data)</div>
             <div class="value">{{ report.devices_with_data }}<span style="font-size:0.5em;color:var(--muted);"> / {{ report.total_devices }}</span></div></div>
         <div class="isp-card"><div class="label">Tests scored</div><div class="value">{{ report.total_tests }}</div></div>
@@ -90,9 +136,23 @@
     {% if report.worst_performers %}
     <p class="isp-sub" style="margin-top:14px;"><strong>Lowest compliance:</strong>
         {% for d in report.worst_performers %}
-        <span class="cpill {{ ccls(d.compliance_pct) | trim }}" style="margin-right:6px;">{{ d.name or d.spoke_ip }} {{ d.compliance_pct }}%</span>
+        <span class="cpill {{ ccls(d.compliance_pct, sla) | trim }}" style="margin-right:6px;">{{ d.name or d.spoke_ip }} {{ d.compliance_pct }}%</span>
         {% endfor %}
     </p>
+    {% endif %}
+
+    {% set has_trend = report.trend | selectattr("total") | list | length > 0 %}
+    {% if has_trend %}
+    <h3 style="margin:18px 0 8px;font-size:0.95em;">Compliance trend</h3>
+    <div class="trend">
+        {% for b in report.trend %}
+        <div class="tbar">
+            <div class="tbar-track"><div class="tbar-fill {{ ccls(b.compliance_pct, sla) | trim }}" style="height:{{ b.compliance_pct | int if b.compliance_pct is not none else 0 }}%;"></div></div>
+            <div class="tval">{{ b.compliance_pct ~ "%" if b.compliance_pct is not none else "—" }}</div>
+            <div class="tlbl">{{ b.label }}</div>
+        </div>
+        {% endfor %}
+    </div>
     {% endif %}
 </section>
 
@@ -113,14 +173,14 @@
         <tbody>
             {% for d in report.devices %}
             <tr>
-                <td>{{ d.name or d.spoke_ip }}<div class="isp-sub"><code>{{ d.spoke_ip }}</code></div></td>
+                <td><a href="/archive/device/{{ d.device_id }}" title="View this device's run history">{{ d.name or d.spoke_ip }}</a><div class="isp-sub"><code>{{ d.spoke_ip }}</code></div></td>
                 <td>{{ d.circuit_id or "—" }}</td>
                 <td>{{ d.speed or "—" }}{% if not d.contract_known %} <span class="isp-sub">(no speed)</span>{% endif %}</td>
                 <td class="num">{{ d.threshold_mbps if d.threshold_mbps is not none else "—" }}</td>
                 <td class="num">{{ d.total_tests }}</td>
                 <td class="num" style="color:#0e7a4a;">{{ d.met }}</td>
                 <td class="num" style="color:#c0392b;">{{ d.not_met }}</td>
-                <td class="num"><span class="cpill {{ ccls(d.compliance_pct) | trim }}">{{ d.compliance_pct if d.compliance_pct is not none else "N/A" }}{% if d.compliance_pct is not none %}%{% endif %}</span></td>
+                <td class="num"><span class="cpill {{ ccls(d.compliance_pct, sla) | trim }}">{{ d.compliance_pct if d.compliance_pct is not none else "N/A" }}{% if d.compliance_pct is not none %}%{% endif %}</span></td>
                 <td class="num">{{ d.avg_mbps if d.avg_mbps is not none else "—" }}</td>
                 <td class="num">{{ d.min_mbps if d.min_mbps is not none else "—" }} / {{ d.max_mbps if d.max_mbps is not none else "—" }}</td>
                 <td class="num">{{ d.avg_pct_of_contract ~ "%" if d.avg_pct_of_contract is not none else "—" }}</td>

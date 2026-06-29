@@ -84,3 +84,28 @@ def test_worst_performers_ordering(fresh_db):
     # Worst (lowest compliance) first
     assert rep["devices"][0]["name"] == "FW-2"
     assert rep["worst_performers"][0]["name"] == "FW-2"
+
+
+def test_trend_buckets_reflect_improvement(fresh_db):
+    d1 = _device("FW-1", "100M", "STC")  # threshold 90
+    _run("R-old", 25, [_site(d1, "10.0.0.1", 60)])   # early: miss
+    _run("R-mid", 14, [_site(d1, "10.0.0.1", 80)])   # mid: miss
+    _run("R-new", 2, [_site(d1, "10.0.0.1", 96)])    # recent: met
+    rep = isp_report.compute_isp_report("STC", clock.now() - timedelta(days=30), clock.now(), 90.0)
+    scored = [b for b in rep["trend"] if b["total"]]
+    assert len(scored) >= 2
+    # Earliest scored bucket is a miss, latest is a pass -> trend improves.
+    assert scored[0]["compliance_pct"] == 0.0
+    assert scored[-1]["compliance_pct"] == 100.0
+
+
+def test_all_isps_ranked_best_first(fresh_db):
+    d1 = _device("FW-1", "100M", "STC")
+    d2 = _device("FW-2", "100M", "Mobily")
+    _run("R1", 1, [_site(d1, "10.0.0.1", 40), _site(d2, "10.0.0.2", 95)])
+    summary = isp_report.compute_all_isps(clock.now() - timedelta(days=7), clock.now(), 90.0)
+    names = [s["isp"] for s in summary["isps"]]
+    assert names == ["Mobily", "STC"]            # 100% before 0%
+    assert summary["isps"][0]["overall_compliance_pct"] == 100.0
+    assert summary["isps"][1]["overall_compliance_pct"] == 0.0
+    assert summary["total_tests"] == 2

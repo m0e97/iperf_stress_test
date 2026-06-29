@@ -39,10 +39,12 @@ Spoke commands run for each spoke in its hub queue, all within a single SSH sess
 ```text
 diagnose traffictest client-intf {spoke_client_intf}
 diagnose traffictest port {traffictest_port}
-diagnose traffictest run -b {speed_with_margin} -c {hub_ip}
+diagnose traffictest run -b {speed_with_margin} -c {hub_ip}{duration_flag}
 ```
 
 Each placeholder is filled in per row: `{hub_server_intf}`, `{spoke_client_intf}`, and `{traffictest_port}` come from the input file (see [Input File](#input-file)) or fall back to `--hub-server-intf` / `--spoke-client-intf` / `--traffictest-port`. `{speed_with_margin}` is the row's speed plus 15%, and `{hub_ip}` is the row's hub IP (or `--hub-ip` when set).
+
+`{duration_flag}` controls the test length: when a row sets `traffictest_duration` (or you pass `--traffictest-duration`), it expands to ` -t <seconds>`, appended at the end of the run command. When neither is set it is empty, and FortiGate falls back to its built-in **10-second** default. A per-device value always wins over the run-wide flag.
 
 All hub commands and all spoke commands each run in a single SSH shell session per device, so per-session settings such as `server-intf` and `client-intf` are preserved when the `run` command executes.
 
@@ -78,6 +80,7 @@ The script recognizes these column names, case-insensitively after normalizing s
 | Hub server interface | `server_intf`, `hub_server_intf`, `hub_intf`, `hub_interface`, `server_interface` |
 | Spoke client interface | `client_intf`, `spoke_client_intf`, `spoke_intf`, `spoke_interface`, `client_interface`, `wan_intf`, `wan_interface` |
 | Traffic-test port | `traffictest_port`, `traffic_port`, `iperf_port`, `test_port` |
+| Test duration (seconds) | `traffictest_duration`, `test_duration`, `duration`, `duration_seconds`, `traffic_duration` |
 
 Name columns such as `name`, `site`, or `spoke_name` are not used as the final firewall name. The script uses the firewall name discovered from SSH.
 
@@ -94,12 +97,12 @@ In this example the script finds two unique hubs (`10.255.0.1` and `10.255.1.1`)
 
 You can also provide one hub IP for all rows with `--hub-ip`.
 
-To override the hub interface, spoke interface, or traffic-test port per row, add `server_intf`, `client_intf`, and `traffictest_port` columns. Rows that leave them blank fall back to `--hub-server-intf`, `--spoke-client-intf`, and `--traffictest-port` (defaults `Mobily`, `wan1`, and `5201`):
+To override the hub interface, spoke interface, traffic-test port, or test duration per row, add `server_intf`, `client_intf`, `traffictest_port`, and `traffictest_duration` columns. Rows that leave them blank fall back to `--hub-server-intf`, `--spoke-client-intf`, and `--traffictest-port` (defaults `Mobily`, `wan1`, and `5201`); a blank `traffictest_duration` means no `-t` is sent and FortiGate uses its built-in 10s default:
 
 ```csv
-spoke_ip,hub_ip,hub_mgmt_ip,speed,server_intf,client_intf,traffictest_port
-10.10.10.1,10.255.0.1,10.1.0.1,100M,STC,wan2,5300
-10.10.20.1,10.255.0.1,10.1.0.1,200M,,,
+spoke_ip,hub_ip,hub_mgmt_ip,speed,server_intf,client_intf,traffictest_port,traffictest_duration
+10.10.10.1,10.255.0.1,10.1.0.1,100M,STC,wan2,5300,30
+10.10.20.1,10.255.0.1,10.1.0.1,200M,,,,
 ```
 
 ## Firewall Name Discovery
@@ -235,7 +238,7 @@ python main.py \
 The script reads `speed` from the input file, converts it to Mbps, adds 15%, and uses that value in the spoke command:
 
 ```text
-diagnose traffictest run -b {speed_with_margin} -c {hub_ip}
+diagnose traffictest run -b {speed_with_margin} -c {hub_ip}{duration_flag}
 ```
 
 Example:
@@ -267,7 +270,8 @@ Command templates can use these placeholders:
 | `{hub_server_intf}` | Hub server interface |
 | `{spoke_client_intf}` | Spoke client interface |
 | `{traffictest_port}` or `{traffic_port}` | Traffic-test port |
-| `{traffictest_duration}` | Test duration in seconds (for custom commands) |
+| `{traffictest_duration}` | Test duration in seconds (effective value: per-device, else `--traffictest-duration`, else empty) |
+| `{duration_flag}` | ` -t <seconds>` when a duration is set, else empty — appended to the built-in run command |
 | `{site_index}` | Row number, starting from 1 |
 
 ## Custom Commands
@@ -366,12 +370,22 @@ If `openpyxl` or `reportlab` are not installed, the HTML report is still written
 
 ### Pass / Fail logic
 
-A spoke **passes** when its measured throughput is ≥ 95 % of its configured speed. Otherwise it fails with a parenthetical reason:
+A spoke **passes** when its measured **sender** throughput meets its acceptance threshold. The threshold is the device's `accepted_speed` when set, otherwise **90 % of the configured speed**. Otherwise it fails with a parenthetical reason:
 
 - **Fail (not reachable)** — no throughput was captured (SSH or traffictest error).
-- **Fail (insufficient speed)** — throughput was captured but fell below the 95 % threshold.
+- **Fail (insufficient speed)** — throughput was captured but fell below the threshold.
+
+The same rule drives both the HTML report and the web dashboard's pass-rate card, and both compare the spoke's **sender-side** throughput, so the two never disagree.
 
 The summary cards at the top of the HTML report are interactive: clicking **Successful sites** or **Failed sites** filters the table to show only that group.
+
+### Per-site detail cards
+
+Below the summary table, each spoke gets a detail card. The report header itself is intentionally minimal — just the title and the generation timestamp. Each card shows:
+
+- **Reachable** — whether the SSH connection to the spoke succeeded (`Yes` / `No`).
+- **Sender / Receiver Throughput** and **Total Retransmissions** from the traffictest run.
+- The **traffictest run** command block, whose **Status** badge reflects the speed **Pass / Fail** result (the acceptance threshold above), not the raw command exit code.
 
 ## Troubleshooting
 
@@ -399,7 +413,7 @@ pip install paramiko
 If the report shows failed commands:
 
 - Open the HTML report and check each command block.
-- Review stdout, stderr, return code, and timeout messages.
+- Review stdout, stderr, and timeout messages.
 
 ## Exit Code
 
@@ -423,30 +437,36 @@ All three modes go through the same engine, so the live log, archive, and report
 
 | Path | Purpose |
 | --- | --- |
-| `/` | Dashboard — stat cards (devices, runs, schedules, pass rate) + recent runs table + collapsed Quick Run form |
+| `/` | Dashboard — stat cards (devices, runs, schedules, device pass rate, last run) + recent runs table + collapsed Quick Run form |
 | `/devices` | Persistent device catalog (add / edit / delete / import / run on selected) |
 | `/devices/{id}/edit` | Edit one device |
 | `/schedules` | List, toggle, edit, delete, manually fire scheduled runs |
 | `/schedules/new`, `/schedules/{id}/edit` | Schedule form (once / daily / weekly / monthly / yearly) |
 | `/archive` | Run-centric list of historic runs with start/finish time, devices tested, green/red pass-fail counts, and HTML/XLSX/PDF download links |
+| `/isp-report` | **ISP Compliance Report** — pick an ISP + time window + SLA target and see, per circuit, how often each link met or missed its contracted speed (see [ISP Compliance Report](#isp-compliance-report)) |
+| `/isp-report/export/{fmt}` | Download the current ISP report as `html` / `xlsx` / `pdf` |
 | `/archive/device/{id}` | Per-device view: all runs for that device plus the throughput timeline chart (linked from the **History** column on the Devices page) |
 | `/archive/run/{id}/render/{fmt}` | Render an archived run as `html` / `xlsx` / `pdf` on demand |
-| `/run/{id}` | Live log view (SSE) for an in-flight or recent run |
+| `/run/{id}` | Live log view (SSE) for an in-flight or recent run, with a **Stop run** button while it is active |
 | `/run/{id}/stream`, `/run/{id}/status` | SSE stream and JSON status, used by the run page |
+| `/run/{id}/stop` | `POST` — request cooperative cancellation of the active run |
 | `/jobs/active` | JSON snapshot of the active job (or the most recent finished run when idle), plus the last 6 runs as history. Powers the bottom run bar. |
 | `/devices/template?format=csv\|xlsx` | Downloads a starter import file pre-filled with the canonical column names and one example row. |
 | `/healthz` | Liveness probe — also reports the report archive directory path |
 
 ### Dashboard
 
-The home page (`/`) shows four stat cards at a glance:
+The home page (`/`) shows five stat cards at a glance:
 
 | Card | What it shows |
 | --- | --- |
-| **Devices** | Total count with passing / failing / untested pills based on each device's most recent run |
+| **Devices** | Total count with passing / failing / untested pills based on each device's most recent result |
 | **Total Runs** | Cumulative run count across all time |
 | **Active Schedules** | Enabled schedules out of the total |
-| **Pass Rate** | Percentage of devices that passed in their last run |
+| **Device Pass Rate** | Fleet-wide health — the share of devices whose **latest result** (across all runs) meets its threshold. Recomputed against current thresholds, so editing a device's `accepted_speed`/`speed` is reflected immediately. |
+| **Last Run** | Pass rate of the **single most recent run only** — i.e. just the devices included in that run. Uses the verdict the engine recorded at run time, so it always matches that run's report. |
+
+> The two pass-rate cards answer different questions: **Device Pass Rate** is "how healthy is my whole fleet right now?", while **Last Run** is "how did the test I just kicked off do?". After a run that targets one device, Last Run reflects only that device, whereas Device Pass Rate still aggregates every device's latest known result.
 
 Below the cards, a **Recent Runs** table lists the last 8 runs with status badge, pass and fail counts, and a link to the live log. The **Quick Run** form sits below in a collapsible `<details>` element.
 
@@ -463,11 +483,12 @@ Devices are stored in SQLite at `/data/app.db`. Each row mirrors the CLI input f
 | `accepted_speed` | Pass/fail threshold override. Leave blank to auto-compute as **90 % of `speed`**. Shown as **auto** in the devices table when not set. |
 | `circuit_id`, `isp` | Informational labels shown in the table and device picker |
 | `server_intf`, `client_intf`, `traffictest_port` | Per-device interface / port overrides |
+| `traffictest_duration` | Per-device test length in seconds (`-t`). Blank = FortiGate's built-in 10s default. |
 | `notes` | Free-text notes |
 
 Add devices manually from the **Add Device** modal, or bulk-import a CSV / XLSX — existing rows (matched by `spoke_ip + hub_ip`) are updated in place. CSV runs from the Quick Run page also get linked to their matching device by IP, so historic results show up in both flows.
 
-If you don't have a file yet, the **Import** modal exposes two **↓ CSV template** / **↓ XLSX template** links (served from `/devices/template?format=…`). Both downloads ship with the same column headers the importer recognizes — `name`, `spoke_ip`, `hub_ip`, `hub_mgmt_ip`, `speed`, `server_intf`, `client_intf`, `traffictest_port`, `circuit_id`, `isp` — plus one example row you can edit or delete. The XLSX template needs `openpyxl` installed in the runner environment; without it the link redirects back with a banner pointing at the `pip install` command.
+If you don't have a file yet, the **Import** modal exposes two **↓ CSV template** / **↓ XLSX template** links (served from `/devices/template?format=…`). Both downloads ship with the same column headers the importer recognizes — `name`, `spoke_ip`, `hub_wan_ip`, `hub_mgmt_ip`, `speed`, `accepted_speed`, `server_intf`, `client_intf`, `traffictest_port`, `traffictest_duration`, `circuit_id`, `isp` — plus one example row you can edit or delete. The XLSX template needs `openpyxl` installed in the runner environment; without it the link redirects back with a banner pointing at the `pip install` command.
 
 The devices page includes a live search bar and a multi-select flow (select → run modal). The device picker on the schedule form shows searchable cards with ISP / BW / circuit ID badges.
 
@@ -485,6 +506,26 @@ Scheduled tasks fire through the same code path as the manual "Run on selected" 
 
 A background poller (every 30 s) queries the schedules table for rows with `next_run_at <= now`. If a run is already active when a schedule fires, the attempt is recorded as `skipped_busy` and the next fire is still advanced.
 
+### ISP Compliance Report
+
+The **Compliance** tab (`/isp-report`) turns the run history into a per-ISP SLA report for contract reviews and renewal negotiations. You pick:
+
+- **ISP** — the report covers every device whose `isp` matches.
+- **Time window** — presets (last 7 / 30 / 90 / 180 days, last 12 months) or a custom `From`/`To` date range.
+- **SLA target %** — a test "meets" the contract when its **sender throughput ≥ SLA % of the device's contracted speed** (`speed`). The percentage is chosen per report, so you can model different negotiating positions (e.g. 80 % vs 95 %).
+
+For every device/circuit it reports, over the window: number of tests scored, how many **met** vs **missed** the SLA, the **compliance %**, and throughput stats (min / avg / max and average % of contract achieved). Devices are ordered worst-compliance first, with the lowest performers highlighted. Aggregate cards show overall compliance, devices with data, and total met / not-met.
+
+> A device can sit well below 100 % compliance even with a healthy-looking average — e.g. averaging 81 % of contract but never crossing a 90 % SLA line. That gap is exactly what the report surfaces for negotiation.
+
+Devices with no `speed` configured are listed but left **unscored** (compliance shown as N/A), and devices with no runs in the window show 0 tests. The report can be downloaded as **HTML**, **Excel**, or **PDF** to attach to a contract discussion.
+
+The report also includes:
+
+- **Compliance trend** — the window is split into up to six contiguous sub-periods and each is scored, so you can see at a glance whether the link is **improving or declining** over the window (rendered as a small bar chart in the app and HTML/PDF, and as rows in Excel).
+- **Per-device drill-down** — each device row links to that device's run history (`/archive/device/{id}`), where you can see every individual run and the throughput timeline behind the compliance number.
+- **All-ISPs comparison** — choosing **★ All ISPs (comparison)** ranks every ISP against each other (overall compliance, devices with data, met / not-met) so you can compare providers at a glance, with a **details →** link to drill into each one. The comparison is itself exportable to HTML / Excel / PDF.
+
 SSH passwords for schedules are **encrypted at rest** in `app.db` using a Fernet key — see [Credential encryption](#credential-encryption). The DB still holds the encrypted tokens, so back up the key file separately if you back up the data volume.
 
 ### Archive
@@ -498,7 +539,7 @@ SSH passwords for schedules are **encrypted at rest** in `app.db` using a Fernet
 | `Started` / `Finished` | Timestamps |
 | `Devices` | Number of devices tested |
 | `Result` | **N pass** in green and **N fail** in red, from the run's stored summary |
-| `Status` | Status badge (`done`, `error`, …) |
+| `Status` | Status badge (`done`, `error`, `cancelled`, …) |
 | `Report` | Per-row **HTML / XLSX / PDF** download links rendered on demand from the report archive |
 
 Per-device history (with the throughput timeline chart) is still reachable at `/archive/device/{id}` — the **History** column on the Devices page links to it.
@@ -518,8 +559,8 @@ The same volume also holds `app.db` (devices, runs, schedules) and `.secret.key`
 The device archive page (`/archive/device/{id}`) shows a per-device throughput timeline:
 
 - Y-axis: measured Mbps. X-axis: run timestamps (oldest → newest).
-- Dashed green line marks the device's configured target speed.
-- Dots are **green if throughput ≥ target**, **red if below**. Hover for a tooltip with the timestamp and value.
+- Dashed green line marks the device's acceptance threshold (`accepted_speed`, or 90 % of the configured speed).
+- Dots are **green if throughput ≥ threshold**, **red if below**. Hover for a tooltip with the timestamp and value.
 
 The chart is inline SVG with theme-aware colors — no CDN dependency.
 
@@ -540,6 +581,10 @@ Every page shares the same chrome:
 
 The web app accepts **one run at a time**. New submissions to `/run`, `/devices/run`, or `/schedules/{id}/run` return HTTP 409 while a run is active; scheduled fires record `skipped_busy`. Within a run, the engine's per-hub parallelism is preserved — multiple hubs run in parallel, each hub queue runs its spokes sequentially.
 
+### Stopping a run
+
+The run page shows a **Stop run** button while a run is active (`POST /run/{id}/stop`). Cancellation is **cooperative**: the engine checks between devices, so the device currently being tested finishes its iperf run, then no further devices start. The run ends with status **`cancelled`**, still archives a report for the devices that completed, and frees the slot so a new run can start.
+
 ### Auth
 
 The web app does **not** authenticate. Bind it to a trusted network (`127.0.0.1` or an internal interface), or put it behind a reverse proxy that enforces auth. Terminate TLS at the reverse proxy and protect the `/data` volume at the filesystem level — even though credentials at rest are encrypted (see below), traffic over HTTP would carry them in cleartext.
@@ -547,6 +592,8 @@ The web app does **not** authenticate. Bind it to a trusted network (`127.0.0.1`
 ### Credential encryption
 
 Every SSH password that the app persists — both `credentials.json` (CLI/GUI saved creds) and the `sshpw` column on the `schedules` table — is encrypted with a per-deployment **Fernet key** before being written to disk. Public usernames stay readable.
+
+A stored schedule password is also **never sent back to the browser**. When you edit a schedule the password field is rendered empty (not pre-filled), so the secret never appears in the page source / DevTools "Inspect". Leave it blank to keep the existing credential, or type a new value to replace it; the username (not secret) is still pre-filled for convenience.
 
 The key is resolved on first use, in this order:
 
@@ -595,6 +642,7 @@ The container needs network access to your hub and spoke firewalls (SSH on TCP 2
 | `IPERF_DATA_DIR` | Base directory for uploads, the SQLite DB, and the `reports/` archive | `/data` (container), `./data` (local) |
 | `IPERF_SECRET_KEY` | Fernet key used to encrypt SSH credentials at rest. Set this in production so the key isn't co-located with the encrypted data. | _(auto-generated key file)_ |
 | `IPERF_SECRET_KEY_FILE` | Path to a file containing the Fernet key (alternative to `IPERF_SECRET_KEY`). | _(unset)_ |
+| `IPERF_TZ_OFFSET` | App-wide timezone offset in hours used for every timestamp (run ids, run started/finished, report times, schedule next/last run, and the UI clock). Lets a UTC server show local time. e.g. `0` for UTC, `5.5` for IST, `-4` for EDT. | `3` (GMT+3, Riyadh) |
 
 ## Tests
 

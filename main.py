@@ -68,6 +68,9 @@ FORTIGATE_HUB_SETUP_COMMANDS = [
     "diagnose traffictest port {traffictest_port}",
 ]
 FORTIGATE_HUB_SERVER_COMMAND = "diagnose traffictest run -s"
+# Pre-flight: confirm the hub server interface permits speed-test before we start
+# the traffictest server on it (otherwise every spoke against this hub would fail).
+FORTIGATE_HUB_ALLOWACCESS_CHECK = "show system interface {hub_server_intf}"
 FORTIGATE_SPOKE_COMMANDS = [
     "diagnose traffictest client-intf {spoke_client_intf}",
     "diagnose traffictest port {traffictest_port}",
@@ -99,6 +102,22 @@ _IPERF_ERROR_RE = re.compile(
     r"|failed\s+to\s+(connect|send|receive)",
     re.IGNORECASE,
 )
+# `show system interface <name>` lists permitted services as `set allowaccess ping https ssh speed-test`.
+_ALLOWACCESS_RE = re.compile(r"set\s+allowaccess\s+(?P<services>.+)", re.IGNORECASE)
+_SPEEDTEST_TOKEN_RE = re.compile(r"\bspeed[-_ ]?test\b", re.IGNORECASE)
+
+
+def speedtest_allowed(show_output: str) -> bool | None:
+    """Whether the interface permits speed-test, parsed from `show system interface`.
+
+    Returns True/False when an ``allowaccess`` line is found, or None when the
+    output has no such line (interface not found / unparseable) so the caller can
+    decide whether to proceed.
+    """
+    match = _ALLOWACCESS_RE.search(show_output or "")
+    if not match:
+        return None
+    return bool(_SPEEDTEST_TOKEN_RE.search(match.group("services")))
 FIREWALL_NAME_PATTERNS = [
     re.compile(r"^\s*hostname\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*system\s+name\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
@@ -1017,13 +1036,22 @@ def _paramiko_hub_session(
     server_template: str,
     timeout: int | None,
     dry_run: bool,
+    check_speedtest: bool = True,
 ) -> tuple[list[CommandResult], CommandResult, "_ParamikoHandle | None"]:
     """Run all hub commands in one Paramiko shell, entering global VDOM once."""
     cmd_prefix = f"[paramiko] {_paramiko_user}@{ssh_target}: "
 
     if dry_run:
         now = clock.now()
-        setup_results = [
+        setup_results = []
+        if check_speedtest:
+            setup_results.append(CommandResult(
+                template=FORTIGATE_HUB_ALLOWACCESS_CHECK,
+                command=cmd_prefix + render_template(FORTIGATE_HUB_ALLOWACCESS_CHECK, rep_site),
+                started_at=now, ended_at=now,
+                return_code=0, stdout="dry-run: speed-test allowaccess check not executed", stderr="",
+            ))
+        setup_results += [
             CommandResult(
                 template=t, command=cmd_prefix + render_template(t, rep_site),
                 started_at=now, ended_at=now,
@@ -1058,6 +1086,65 @@ def _paramiko_hub_session(
 
     setup_results: list[CommandResult] = []
     connection_failed = False
+
+    # Pre-flight: confirm the hub server interface permits speed-test in its
+    # allowaccess. If it does not, the traffictest server is unreachable and every
+    # spoke against this hub would fail — so stop here with a clear, actionable error.
+    if check_speedtest:
+        intf = render_template("{hub_server_intf}", rep_site)
+        check_rendered = render_template(FORTIGATE_HUB_ALLOWACCESS_CHECK, rep_site)
+        started_at = clock.now()
+        try:
+            shell.send(check_rendered + "\n")
+            raw = _shell_read_until_prompt(shell, timeout=timeout or 30)
+            stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
+            allowed = speedtest_allowed(stdout)
+            ended_at = clock.now()
+            if allowed is False:
+                setup_results.append(CommandResult(
+                    template=FORTIGATE_HUB_ALLOWACCESS_CHECK, command=cmd_prefix + check_rendered,
+                    started_at=started_at, ended_at=ended_at,
+                    return_code=None, stdout=stdout, stderr="",
+                    error=(f"Hub interface '{intf}' does not permit speed-test in allowaccess. "
+                           f"Enable it on the hub:  config system interface / edit {intf} / "
+                           f"append allowaccess speed-test / end"),
+                ))
+                try:
+                    shell.close(); client.close()
+                except Exception:
+                    pass
+                server_initial = CommandResult(
+                    template=server_template, command=cmd_prefix + server_template,
+                    started_at=clock.now(), ended_at=clock.now(),
+                    return_code=None, stdout="", stderr="",
+                    error="Skipped — hub setup failed.",
+                )
+                return setup_results, server_initial, None
+            note = (f"speed-test is permitted on '{intf}'." if allowed
+                    else f"Could not read allowaccess for '{intf}'; proceeding without the speed-test gate.")
+            setup_results.append(CommandResult(
+                template=FORTIGATE_HUB_ALLOWACCESS_CHECK, command=cmd_prefix + check_rendered,
+                started_at=started_at, ended_at=ended_at,
+                return_code=0, stdout=note + "\n\n" + stdout, stderr="",
+            ))
+        except Exception as exc:
+            ended_at = clock.now()
+            setup_results.append(CommandResult(
+                template=FORTIGATE_HUB_ALLOWACCESS_CHECK, command=cmd_prefix + check_rendered,
+                started_at=started_at, ended_at=ended_at,
+                return_code=None, stdout="", stderr="", error=str(exc),
+            ))
+            try:
+                shell.close(); client.close()
+            except Exception:
+                pass
+            server_initial = CommandResult(
+                template=server_template, command=cmd_prefix + server_template,
+                started_at=clock.now(), ended_at=clock.now(),
+                return_code=None, stdout="", stderr="", error="Skipped — hub setup failed.",
+            )
+            return setup_results, server_initial, None
+
     for template in setup_templates:
         rendered = render_template(template, rep_site)
         cmd_label = cmd_prefix + rendered
@@ -2106,6 +2193,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--skip-speedtest-check",
+        action="store_true",
+        help=(
+            "Skip the pre-flight check that verifies the hub server interface permits "
+            "'speed-test' in its allowaccess before starting the traffictest server."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Render commands and report without executing the traffic tests.",
@@ -2642,6 +2737,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                     ssh_target, rep_site,
                     FORTIGATE_HUB_SETUP_COMMANDS, FORTIGATE_HUB_SERVER_COMMAND,
                     args.timeout, args.dry_run,
+                    check_speedtest=not args.skip_speedtest_check,
                 )
                 connection_failed = any(r.error for r in setup_results) or (
                     server_initial is not None and server_initial.error == "Skipped — hub setup failed."
@@ -2651,7 +2747,38 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                 # "config global" transparently to the remote command.
                 setup_results = []
                 connection_failed = False
-                for template in FORTIGATE_HUB_SETUP_COMMANDS:
+
+                # Pre-flight: verify speed-test is permitted on the hub server interface.
+                if not args.skip_speedtest_check and not args.dry_run:
+                    intf = render_template("{hub_server_intf}", rep_site)
+                    chk = _exec_ssh(
+                        rep_site, ssh_target,
+                        "config global\n" + FORTIGATE_HUB_ALLOWACCESS_CHECK,
+                        args.ssh_template, args.timeout, args.dry_run,
+                    )
+                    allowed = speedtest_allowed(chk.stdout) if not chk.error else None
+                    if chk.error or allowed is False:
+                        err = chk.error or (
+                            f"Hub interface '{intf}' does not permit speed-test in allowaccess. "
+                            f"Enable it on the hub:  config system interface / edit {intf} / "
+                            f"append allowaccess speed-test / end")
+                        setup_results.append(CommandResult(
+                            template=FORTIGATE_HUB_ALLOWACCESS_CHECK, command=chk.command,
+                            started_at=chk.started_at, ended_at=chk.ended_at,
+                            return_code=chk.return_code, stdout=chk.stdout, stderr=chk.stderr,
+                            error=err,
+                        ))
+                        connection_failed = True
+                    else:
+                        note = (f"speed-test is permitted on '{intf}'." if allowed
+                                else f"Could not read allowaccess for '{intf}'; proceeding without the speed-test gate.")
+                        setup_results.append(CommandResult(
+                            template=FORTIGATE_HUB_ALLOWACCESS_CHECK, command=chk.command,
+                            started_at=chk.started_at, ended_at=chk.ended_at,
+                            return_code=0, stdout=note + "\n\n" + (chk.stdout or ""), stderr="",
+                        ))
+
+                for template in (FORTIGATE_HUB_SETUP_COMMANDS if not connection_failed else []):
                     result = _exec_ssh(
                         rep_site, ssh_target,
                         "config global\n" + template,
@@ -2745,7 +2872,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                 error_lines: list[str] = []
                 for ip in failed_hubs:
                     ctx_results = hub_contexts[ip].get("setup_results", [])
-                    err = ctx_results[0].error if ctx_results and ctx_results[0].error else "unknown error"
+                    err = next((r.error for r in ctx_results if r.error), None) or "unknown error"
                     line = f"Hub {ip}: {err}"
                     error_lines.append(line)
                     print(f"  {line}", flush=True)

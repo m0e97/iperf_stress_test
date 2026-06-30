@@ -29,10 +29,20 @@ Hub commands run once per hub before any spoke tests, all within a single SSH se
 
 ```text
 config global
+show system interface {hub_server_intf}      ← pre-flight: speed-test allowaccess check
 diagnose traffictest server-intf {hub_server_intf}
 diagnose traffictest port {traffictest_port}
 diagnose traffictest run -s
 ```
+
+**Pre-flight speed-test check.** Before starting the traffictest server, the script reads `show system interface {hub_server_intf}` and confirms `speed-test` is present in the interface's `allowaccess` line (e.g. `set allowaccess ping https ssh speed-test`). If it is **missing**, the hub is failed immediately — *before* any `diagnose traffictest` command runs — with an actionable message, because the server would be unreachable and every spoke against that hub would fail otherwise:
+
+```
+Hub 10.255.0.1: Hub interface 'Mobily' does not permit speed-test in allowaccess.
+Enable it on the hub:  config system interface / edit Mobily / append allowaccess speed-test / end
+```
+
+If the `allowaccess` line can't be read the run proceeds (the gate fails open). Pass `--skip-speedtest-check` to disable the check entirely.
 
 Spoke commands run for each spoke in its hub queue, all within a single SSH session per spoke:
 
@@ -317,6 +327,7 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--sshpw [PASSWORD]` | SSH password as a value, or omit the value to be prompted invisibly |
 | `--paramiko` | Use Paramiko (pure-Python SSH) instead of external `ssh`/`sshpass` executables. Default on Windows |
 | `--skip-hub-setup` | Skip all hub SSH commands; assumes the hub traffictest server is already running |
+| `--skip-speedtest-check` | Skip the pre-flight check that verifies the hub server interface permits `speed-test` in its `allowaccess` before starting the server |
 | `--ssh-template` | SSH wrapper for built-in hub/spoke traffictest commands (Linux/macOS only) |
 | `--hub-server-intf` | Hub interface for `server-intf`, default `Mobily` |
 | `--spoke-client-intf` | Spoke interface for `client-intf`, default `wan1` |

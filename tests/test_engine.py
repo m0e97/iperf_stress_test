@@ -171,6 +171,57 @@ def test_command_status_failed_on_nonzero_return_code():
     assert _cmd(0.0, return_code=1, stdout="ok").status == "failed"
 
 
+# --- speed-test allowaccess pre-flight check -----------------------------
+
+_SHOW_ALLOWED = """config system interface
+    edit "Mobily"
+        set allowaccess ping https ssh speed-test
+    next
+end"""
+_SHOW_DENIED = """config system interface
+    edit "Mobily"
+        set allowaccess ping https ssh
+    next
+end"""
+
+
+def test_speedtest_allowed_true():
+    assert engine.speedtest_allowed(_SHOW_ALLOWED) is True
+
+
+def test_speedtest_allowed_false():
+    assert engine.speedtest_allowed(_SHOW_DENIED) is False
+
+
+def test_speedtest_allowed_unparseable_is_none():
+    assert engine.speedtest_allowed("edit port1\n next\n end") is None
+    assert engine.speedtest_allowed("") is None
+
+
+def test_speedtest_allowed_token_variants():
+    assert engine.speedtest_allowed("set allowaccess ping speedtest") is True
+    assert engine.speedtest_allowed("set allowaccess ping speed_test") is True
+    # 'speed-test-foo' should not be a false positive; only the bare token counts
+    assert engine.speedtest_allowed("set allowaccess ping https") is False
+
+
+def test_hub_session_dry_run_includes_speedtest_check():
+    site = engine.build_sites([{"spoke_ip": "10.0.0.1", "hub_ip": "10.0.0.254", "speed": "100M"}])[0]
+    site.placeholders["hub_server_intf"] = "Mobily"
+    site.placeholders["traffictest_port"] = "5201"
+    setup, server, handle = engine._paramiko_hub_session(
+        "10.0.0.254", site, engine.FORTIGATE_HUB_SETUP_COMMANDS,
+        engine.FORTIGATE_HUB_SERVER_COMMAND, timeout=10, dry_run=True, check_speedtest=True,
+    )
+    assert setup[0].template == engine.FORTIGATE_HUB_ALLOWACCESS_CHECK
+    # When disabled, the check is not added.
+    setup2, _, _ = engine._paramiko_hub_session(
+        "10.0.0.254", site, engine.FORTIGATE_HUB_SETUP_COMMANDS,
+        engine.FORTIGATE_HUB_SERVER_COMMAND, timeout=10, dry_run=True, check_speedtest=False,
+    )
+    assert all(r.template != engine.FORTIGATE_HUB_ALLOWACCESS_CHECK for r in setup2)
+
+
 # --- test duration / -t flag ---------------------------------------------
 
 def test_sanitize_duration():

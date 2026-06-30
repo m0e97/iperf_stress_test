@@ -26,6 +26,8 @@
             <label>Client intf <input type="text" name="client_intf" value="{{ device.client_intf or '' }}"></label>
             <label>Traffictest port <input type="text" name="traffictest_port" value="{{ device.traffictest_port or '' }}"></label>
             <label>Test duration (s) <input type="number" name="traffictest_duration" min="1" value="{{ device.traffictest_duration or '' }}" placeholder="default 10s"></label>
+            <label>Server SD-WAN VDOM <input type="text" name="server_sdwan_vdom" value="{{ device.server_sdwan_vdom or '' }}" placeholder="blank = hub has no VDOM"></label>
+            <label>Client SD-WAN VDOM <input type="text" name="client_sdwan_vdom" value="{{ device.client_sdwan_vdom or '' }}" placeholder="blank = spoke has no VDOM"></label>
         </div>
         <label>Notes <input type="text" name="notes" value="{{ device.notes or '' }}"></label>
         <button type="submit">Save</button>

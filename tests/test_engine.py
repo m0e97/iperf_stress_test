@@ -250,7 +250,7 @@ def test_hub_routing_check_verdicts(monkeypatch):
     _fake_shell_factory(monkeypatch, responder)
     s1 = engine.build_sites([{"spoke_ip": "10.0.0.1", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
     s2 = engine.build_sites([{"spoke_ip": "10.0.0.2", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
-    results, verdicts = engine._paramiko_hub_routing_check("10.255.0.1", [s1, s2], "Mobily", timeout=10, dry_run=False)
+    results, verdicts = engine._paramiko_hub_routing_check("10.255.0.1", [s1, s2], "Mobily", "", timeout=10, dry_run=False)
     assert verdicts == {"10.0.0.1": True, "10.0.0.2": False}
     assert any(r.error for r in results)            # the failed spoke is flagged
 
@@ -279,6 +279,84 @@ def test_spoke_routing_gate_proceeds_when_correct(monkeypatch):
     site.placeholders.update({"spoke_client_intf": "wan2", "traffictest_port": "5201", "duration_flag": ""})
     res = engine._paramiko_spoke_session(site, engine.FORTIGATE_SPOKE_COMMANDS, 10, False, routing_intf="wan2")
     assert len(res) == len(engine.FORTIGATE_SPOKE_COMMANDS) + 1   # routing check + all spoke commands
+
+
+# --- SD-WAN VDOM scoping --------------------------------------------------
+
+def test_vdom_wrap():
+    assert engine._vdom_wrap("get x", "SDWAN") == "config vdom\nedit SDWAN\nget x\nend"
+    assert engine._vdom_wrap("get x", "") == "get x"
+
+
+def test_build_sites_reads_vdom_fields():
+    site = engine.build_sites([{
+        "spoke_ip": "10.0.0.1", "hub_ip": "10.255.0.1", "speed": "100M",
+        "server_sdwan_vdom": "HUB-VD", "client_sdwan_vdom": "SPOKE-VD",
+    }])[0]
+    assert site.server_sdwan_vdom == "HUB-VD"
+    assert site.client_sdwan_vdom == "SPOKE-VD"
+    # alias: sdwan_vdom -> client side
+    site2 = engine.build_sites([{"spoke_ip": "10.0.0.1", "hub_ip": "10.255.0.1", "speed": "100M", "sdwan_vdom": "X"}])[0]
+    assert site2.client_sdwan_vdom == "X"
+
+
+def test_hub_routing_check_scopes_into_vdom(monkeypatch):
+    sent = []
+
+    class _Shell:
+        def send(self, s): sent.append(s)
+        def close(self): pass
+        def settimeout(self, *a): pass
+    monkeypatch.setattr(engine, "_paramiko_connect", lambda *a, **k: type("C", (), {"close": lambda s: None})())
+    monkeypatch.setattr(engine, "_paramiko_open_shell", lambda *a, **k: _Shell())
+    monkeypatch.setattr(engine, "_shell_read_until_prompt",
+                        lambda shell, timeout=None: "* 10.0.0.1, via Mobily" if (sent and "routing-table" in sent[-1]) else "")
+    s1 = engine.build_sites([{"spoke_ip": "10.0.0.1", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
+    _, verdicts = engine._paramiko_hub_routing_check("10.255.0.1", [s1], "Mobily", "HUB-VD", timeout=10, dry_run=False)
+    joined = "\n".join(sent)
+    assert "config vdom" in joined and "edit HUB-VD" in joined and joined.strip().endswith("end")
+    assert verdicts == {"10.0.0.1": True}
+
+
+def test_spoke_session_vdom_enters_global_after_routing(monkeypatch):
+    sent = []
+
+    class _Shell:
+        def send(self, s): sent.append(s)
+        def close(self): pass
+        def settimeout(self, *a): pass
+    monkeypatch.setattr(engine, "_paramiko_connect", lambda *a, **k: type("C", (), {"close": lambda s: None})())
+    monkeypatch.setattr(engine, "_paramiko_open_shell", lambda *a, **k: _Shell())
+    monkeypatch.setattr(engine, "_shell_read_until_prompt",
+                        lambda shell, timeout=None: "* 10.255.0.1, via wan2" if (sent and "routing-table" in sent[-1]) else "ok")
+    site = engine.build_sites([{"spoke_ip": "10.0.0.9", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
+    site.placeholders.update({"spoke_client_intf": "wan2", "traffictest_port": "5201", "duration_flag": ""})
+    engine._paramiko_spoke_session(site, engine.FORTIGATE_SPOKE_COMMANDS, 10, False,
+                                   routing_intf="wan2", routing_vdom="SPOKE-VD", enter_global=True)
+    joined = "\n".join(sent)
+    # routing scoped into the vdom, then config global before the traffictest commands
+    assert "edit SPOKE-VD" in joined
+    assert joined.index("config global") > joined.index("edit SPOKE-VD")
+    assert "diagnose traffictest client-intf wan2" in joined
+
+
+def test_spoke_session_no_vdom_no_config_global(monkeypatch):
+    sent = []
+
+    class _Shell:
+        def send(self, s): sent.append(s)
+        def close(self): pass
+        def settimeout(self, *a): pass
+    monkeypatch.setattr(engine, "_paramiko_connect", lambda *a, **k: type("C", (), {"close": lambda s: None})())
+    monkeypatch.setattr(engine, "_paramiko_open_shell", lambda *a, **k: _Shell())
+    monkeypatch.setattr(engine, "_shell_read_until_prompt",
+                        lambda shell, timeout=None: "* 10.255.0.1, via wan2" if (sent and "routing-table" in sent[-1]) else "ok")
+    site = engine.build_sites([{"spoke_ip": "10.0.0.9", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
+    site.placeholders.update({"spoke_client_intf": "wan2", "traffictest_port": "5201", "duration_flag": ""})
+    engine._paramiko_spoke_session(site, engine.FORTIGATE_SPOKE_COMMANDS, 10, False,
+                                   routing_intf="wan2", routing_vdom="", enter_global=False)
+    joined = "\n".join(sent)
+    assert "config global" not in joined and "config vdom" not in joined
 
 
 def test_hub_session_dry_run_includes_speedtest_check():

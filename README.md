@@ -52,6 +52,13 @@ If the `allowaccess` line can't be read the run proceeds (the gate fails open). 
 
 A destination whose route does not name the expected interface (or has no route) **fails** the check. Pass `--skip-routing-check` to disable both routing checks. Like the speed-test check, these are **read-only** (`get …`) — they never modify the device configuration.
 
+**SD-WAN VDOM support.** Hubs and spokes that run the SD-WAN routing in a VDOM are handled per side via two device fields:
+
+- **`server_sdwan_vdom`** — the hub's VDOM. When set, the hub's routing check runs inside it (`config vdom / edit <vdom> / get router … / end`) and the hub's traffictest commands run inside `config global`. When blank, the hub has no VDOM and both run at the root prompt.
+- **`client_sdwan_vdom`** — the spoke's VDOM, with the same effect on the spoke side.
+
+Because each side is independent, every combination works: client-on-VDOM + server-not, server-on-VDOM + client-not, both, or neither. There is **no default** — leave a field blank to mean "that side has no VDOM".
+
 Spoke commands run for each spoke in its hub queue, all within a single SSH session per spoke:
 
 ```text
@@ -100,6 +107,8 @@ The script recognizes these column names, case-insensitively after normalizing s
 | Spoke client interface | `client_intf`, `spoke_client_intf`, `spoke_intf`, `spoke_interface`, `client_interface`, `wan_intf`, `wan_interface` |
 | Traffic-test port | `traffictest_port`, `traffic_port`, `iperf_port`, `test_port` |
 | Test duration (seconds) | `traffictest_duration`, `test_duration`, `duration`, `duration_seconds`, `traffic_duration` |
+| Hub (server) SD-WAN VDOM | `server_sdwan_vdom`, `server_vdom`, `hub_vdom`, `hub_sdwan_vdom` |
+| Spoke (client) SD-WAN VDOM | `client_sdwan_vdom`, `client_vdom`, `spoke_vdom`, `spoke_sdwan_vdom`, `sdwan_vdom` |
 
 Name columns such as `name`, `site`, or `spoke_name` are not used as the final firewall name. The script uses the firewall name discovered from SSH.
 
@@ -505,11 +514,12 @@ Devices are stored in SQLite at `/data/app.db`. Each row mirrors the CLI input f
 | `circuit_id`, `isp` | Informational labels shown in the table and device picker |
 | `server_intf`, `client_intf`, `traffictest_port` | Per-device interface / port overrides |
 | `traffictest_duration` | Per-device test length in seconds (`-t`). Blank = FortiGate's built-in 10s default. |
+| `server_sdwan_vdom`, `client_sdwan_vdom` | SD-WAN VDOM for the hub / spoke side. Blank = that side has no VDOM. Drives the routing-check and traffictest command context (see [Built-In Speed Test Commands](#built-in-speed-test-commands)). |
 | `notes` | Free-text notes |
 
 Add devices manually from the **Add Device** modal, or bulk-import a CSV / XLSX — existing rows (matched by `spoke_ip + hub_ip`) are updated in place. CSV runs from the Quick Run page also get linked to their matching device by IP, so historic results show up in both flows.
 
-If you don't have a file yet, the **Import** modal exposes two **↓ CSV template** / **↓ XLSX template** links (served from `/devices/template?format=…`). Both downloads ship with the same column headers the importer recognizes — `name`, `spoke_ip`, `hub_wan_ip`, `hub_mgmt_ip`, `speed`, `accepted_speed`, `server_intf`, `client_intf`, `traffictest_port`, `traffictest_duration`, `circuit_id`, `isp` — plus one example row you can edit or delete. The XLSX template needs `openpyxl` installed in the runner environment; without it the link redirects back with a banner pointing at the `pip install` command.
+If you don't have a file yet, the **Import** modal exposes two **↓ CSV template** / **↓ XLSX template** links (served from `/devices/template?format=…`). Both downloads ship with the same column headers the importer recognizes — `name`, `spoke_ip`, `hub_wan_ip`, `hub_mgmt_ip`, `speed`, `accepted_speed`, `server_intf`, `client_intf`, `traffictest_port`, `traffictest_duration`, `server_sdwan_vdom`, `client_sdwan_vdom`, `circuit_id`, `isp` — plus one example row you can edit or delete. The XLSX template needs `openpyxl` installed in the runner environment; without it the link redirects back with a banner pointing at the `pip install` command.
 
 The devices page includes a live search bar and a multi-select flow (select → run modal). The device picker on the schedule form shows searchable cards with ISP / BW / circuit ID badges.
 

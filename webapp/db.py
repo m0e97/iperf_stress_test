@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS devices (
     client_intf TEXT DEFAULT '',
     traffictest_port TEXT DEFAULT '',
     traffictest_duration TEXT DEFAULT '',
+    server_sdwan_vdom TEXT DEFAULT '',
+    client_sdwan_vdom TEXT DEFAULT '',
     circuit_id TEXT DEFAULT '',
     isp TEXT DEFAULT '',
     notes TEXT DEFAULT '',
@@ -117,6 +119,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE devices ADD COLUMN accepted_speed TEXT DEFAULT ''")
     if "traffictest_duration" not in dev_cols:
         conn.execute("ALTER TABLE devices ADD COLUMN traffictest_duration TEXT DEFAULT ''")
+    if "server_sdwan_vdom" not in dev_cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN server_sdwan_vdom TEXT DEFAULT ''")
+    if "client_sdwan_vdom" not in dev_cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN client_sdwan_vdom TEXT DEFAULT ''")
 
     run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
     if "schedule_name" not in run_cols:
@@ -151,6 +157,7 @@ def _connect() -> Iterator[sqlite3.Connection]:
 DEVICE_COLUMNS = (
     "name", "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed", "accepted_speed",
     "server_intf", "client_intf", "traffictest_port", "traffictest_duration",
+    "server_sdwan_vdom", "client_sdwan_vdom",
     "circuit_id", "isp", "notes",
 )
 

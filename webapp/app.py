@@ -734,11 +734,13 @@ def device_delete(device_id: int):
 _DEVICE_TEMPLATE_COLUMNS = [
     "name", "spoke_ip", "hub_wan_ip", "hub_mgmt_ip", "speed", "accepted_speed",
     "server_intf", "client_intf", "traffictest_port", "traffictest_duration",
+    "server_sdwan_vdom", "client_sdwan_vdom",
     "circuit_id", "isp",
 ]
 _DEVICE_TEMPLATE_EXAMPLE = [
     "FW-Riyadh-01", "10.10.10.1", "10.255.0.1", "10.0.0.1", "100Mbps", "",
     "Mobily", "wan1", "5201", "10",
+    "", "",
     "CIRC-001", "STC",
 ]
 
@@ -809,6 +811,8 @@ async def device_import(input_file: UploadFile):
             "client_intf": engine.find_first_value(norm, engine.SPOKE_CLIENT_INTF_ALIASES),
             "traffictest_port": engine.find_first_value(norm, engine.TRAFFICTEST_PORT_ALIASES),
             "traffictest_duration": engine.find_first_value(norm, engine.TRAFFICTEST_DURATION_ALIASES),
+            "server_sdwan_vdom": engine.find_first_value(norm, engine.SERVER_SDWAN_VDOM_ALIASES),
+            "client_sdwan_vdom": engine.find_first_value(norm, engine.CLIENT_SDWAN_VDOM_ALIASES),
             "circuit_id": engine.find_first_value(norm, engine.CIRCUIT_ID_ALIASES),
             "isp": engine.find_first_value(norm, engine.ISP_ALIASES),
             "notes": "",
@@ -850,6 +854,7 @@ def _start_run_for_devices(
         writer.writerow([
             "spoke_ip", "hub_ip", "hub_mgmt_ip", "speed", "accepted_speed",
             "server_intf", "client_intf", "traffictest_port", "traffictest_duration",
+            "server_sdwan_vdom", "client_sdwan_vdom",
             "circuit_id", "isp",
         ])
         for did in device_ids:
@@ -861,6 +866,7 @@ def _start_run_for_devices(
                 d.get("accepted_speed") or "",
                 d["server_intf"], d["client_intf"], d["traffictest_port"],
                 d.get("traffictest_duration") or "",
+                d.get("server_sdwan_vdom") or "", d.get("client_sdwan_vdom") or "",
                 d.get("circuit_id") or "", d.get("isp") or "",
             ])
 

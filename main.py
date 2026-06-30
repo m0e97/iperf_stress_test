@@ -196,6 +196,22 @@ TRAFFICTEST_DURATION_ALIASES = {
     "duration_seconds",
     "traffic_duration",
 }
+# SD-WAN VDOM names. When set for a side, that side's routing check runs inside
+# `config vdom / edit <vdom>` and its traffictest commands run inside `config
+# global`; when empty, that side has no VDOM and commands run at the root prompt.
+SERVER_SDWAN_VDOM_ALIASES = {
+    "server_sdwan_vdom",
+    "server_vdom",
+    "hub_vdom",
+    "hub_sdwan_vdom",
+}
+CLIENT_SDWAN_VDOM_ALIASES = {
+    "client_sdwan_vdom",
+    "client_vdom",
+    "spoke_vdom",
+    "spoke_sdwan_vdom",
+    "sdwan_vdom",
+}
 CIRCUIT_ID_ALIASES = {
     "circuit_id",
     "circuit",
@@ -233,6 +249,8 @@ class SiteDefinition:
     spoke_client_intf: str = ""
     traffictest_port: str = ""
     traffictest_duration: str = ""
+    server_sdwan_vdom: str = ""
+    client_sdwan_vdom: str = ""
     hub_name: str = ""
     circuit_id: str = ""
     isp: str = ""
@@ -512,6 +530,8 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
         spoke_client_intf = find_first_value(placeholders, SPOKE_CLIENT_INTF_ALIASES)
         traffictest_port = find_first_value(placeholders, TRAFFICTEST_PORT_ALIASES)
         traffictest_duration = find_first_value(placeholders, TRAFFICTEST_DURATION_ALIASES)
+        server_sdwan_vdom = find_first_value(placeholders, SERVER_SDWAN_VDOM_ALIASES)
+        client_sdwan_vdom = find_first_value(placeholders, CLIENT_SDWAN_VDOM_ALIASES)
         circuit_id = find_first_value(placeholders, CIRCUIT_ID_ALIASES)
         isp = find_first_value(placeholders, ISP_ALIASES)
         speed_mbps = parse_speed_to_mbps(speed)
@@ -546,6 +566,8 @@ def build_sites(rows: list[dict[str, str]]) -> list[SiteDefinition]:
                 spoke_client_intf=spoke_client_intf,
                 traffictest_port=traffictest_port,
                 traffictest_duration=traffictest_duration,
+                server_sdwan_vdom=server_sdwan_vdom,
+                client_sdwan_vdom=client_sdwan_vdom,
                 circuit_id=circuit_id,
                 isp=isp,
             )
@@ -1047,18 +1069,27 @@ def _paramiko_start_background(
     )
 
 
+def _vdom_wrap(command: str, vdom: str) -> str:
+    """Scope a single FortiGate command into a VDOM with config vdom / edit / end."""
+    if not vdom:
+        return command
+    return f"config vdom\nedit {vdom}\n{command}\nend"
+
+
 def _paramiko_hub_routing_check(
     ssh_target: str,
     spoke_sites: list[SiteDefinition],
     server_intf: str,
+    vdom: str,
     timeout: int | None,
     dry_run: bool,
 ) -> tuple[list[CommandResult], dict[str, bool]]:
     """On the hub, confirm each spoke IP routes out via the server interface.
 
-    Runs ``get router info routing-table details <spoke_ip>`` at the root prompt
-    (before ``config global``) for every spoke that will test against this hub.
-    Returns (per-spoke CommandResults, {spoke_ip: routing_ok}).
+    Runs ``get router info routing-table details <spoke_ip>`` for every spoke that
+    will test against this hub. When ``vdom`` is set the check is scoped into that
+    VDOM (``config vdom / edit <vdom> / … / end``); otherwise it runs at the root
+    prompt. Returns (per-spoke CommandResults, {spoke_ip: routing_ok}).
     """
     cmd_prefix = f"[paramiko] {_paramiko_user}@{ssh_target}: "
     results: list[CommandResult] = []
@@ -1070,7 +1101,7 @@ def _paramiko_hub_routing_check(
             spoke_ip = site.ip_address or ""
             results.append(CommandResult(
                 template=FORTIGATE_HUB_ROUTING_CHECK,
-                command=cmd_prefix + f"get router info routing-table details {spoke_ip}",
+                command=cmd_prefix + _vdom_wrap(f"get router info routing-table details {spoke_ip}", vdom),
                 started_at=now, ended_at=now, return_code=0,
                 stdout="dry-run: routing check not executed", stderr="",
             ))
@@ -1091,9 +1122,13 @@ def _paramiko_hub_routing_check(
         return results, verdicts
 
     try:
+        if vdom:
+            shell.send(f"config vdom\nedit {vdom}\n")
+            _shell_read_until_prompt(shell, timeout=timeout or 30)
         for site in spoke_sites:
             spoke_ip = site.ip_address or ""
             cmd = f"get router info routing-table details {spoke_ip}"
+            display = _vdom_wrap(cmd, vdom)
             started_at = clock.now()
             try:
                 shell.send(cmd + "\n")
@@ -1102,20 +1137,26 @@ def _paramiko_hub_routing_check(
                 ok = routing_via_interface(stdout, server_intf)
                 verdicts[spoke_ip] = ok
                 results.append(CommandResult(
-                    template=FORTIGATE_HUB_ROUTING_CHECK, command=cmd_prefix + cmd,
+                    template=FORTIGATE_HUB_ROUTING_CHECK, command=cmd_prefix + display,
                     started_at=started_at, ended_at=clock.now(),
                     return_code=0 if ok else None, stdout=stdout, stderr="",
                     error=None if ok else (
                         f"Spoke {spoke_ip} does not route via the hub server interface "
-                        f"'{server_intf}' — skipping this spoke."),
+                        f"'{server_intf}'{f' in VDOM {vdom}' if vdom else ''} — skipping this spoke."),
                 ))
             except Exception as exc:
                 verdicts[spoke_ip] = False
                 results.append(CommandResult(
-                    template=FORTIGATE_HUB_ROUTING_CHECK, command=cmd_prefix + cmd,
+                    template=FORTIGATE_HUB_ROUTING_CHECK, command=cmd_prefix + display,
                     started_at=started_at, ended_at=clock.now(),
                     return_code=None, stdout="", stderr="", error=str(exc),
                 ))
+        if vdom:
+            try:
+                shell.send("end\n")
+                _shell_read_until_prompt(shell, timeout=timeout or 30)
+            except Exception:
+                pass
     finally:
         try:
             shell.close(); client.close()
@@ -1132,8 +1173,13 @@ def _paramiko_hub_session(
     timeout: int | None,
     dry_run: bool,
     check_speedtest: bool = True,
+    enter_global: bool = True,
 ) -> tuple[list[CommandResult], CommandResult, "_ParamikoHandle | None"]:
-    """Run all hub commands in one Paramiko shell, entering global VDOM once."""
+    """Run all hub commands in one Paramiko shell.
+
+    ``enter_global`` controls whether the traffictest commands are wrapped in
+    ``config global`` (the hub uses a VDOM) or run at the root prompt (no VDOM).
+    """
     cmd_prefix = f"[paramiko] {_paramiko_user}@{ssh_target}: "
 
     if dry_run:
@@ -1175,9 +1221,11 @@ def _paramiko_hub_session(
         )
         return [err_result], err_result, None
 
-    # Enter global VDOM once for the entire session.
-    shell.send("config global\n")
-    _shell_read_until_prompt(shell, timeout=timeout or 30)
+    # Enter global config once for the session when the hub uses a VDOM; otherwise
+    # run the traffictest commands at the root prompt (hub has no VDOMs).
+    if enter_global:
+        shell.send("config global\n")
+        _shell_read_until_prompt(shell, timeout=timeout or 30)
 
     setup_results: list[CommandResult] = []
     connection_failed = False
@@ -1320,11 +1368,15 @@ def _paramiko_spoke_session(
     timeout: int | None,
     dry_run: bool,
     routing_intf: str | None = None,
+    routing_vdom: str = "",
+    enter_global: bool = False,
 ) -> list[CommandResult]:
     """Run all spoke commands in one Paramiko shell so per-session settings persist.
 
     When ``routing_intf`` is given, first verify the hub WAN IP routes out via that
-    client interface; if it does not, record the failed check and skip the test.
+    client interface (scoped into ``routing_vdom`` when set); if it does not, record
+    the failed check and skip the test. ``enter_global`` wraps the traffictest
+    commands in ``config global`` (the spoke uses a VDOM) instead of the root prompt.
     """
     host = site.ip_address
     cmd_prefix = f"[paramiko] {_paramiko_user}@{host}: "
@@ -1335,7 +1387,7 @@ def _paramiko_spoke_session(
         if routing_intf:
             results.append(CommandResult(
                 template=FORTIGATE_SPOKE_ROUTING_CHECK,
-                command=cmd_prefix + render_template(FORTIGATE_SPOKE_ROUTING_CHECK, site),
+                command=cmd_prefix + _vdom_wrap(render_template(FORTIGATE_SPOKE_ROUTING_CHECK, site), routing_vdom),
                 started_at=now, ended_at=now,
                 return_code=0, stdout="dry-run: routing check not executed", stderr="",
             ))
@@ -1365,29 +1417,42 @@ def _paramiko_spoke_session(
         # Pre-flight: confirm the hub WAN IP routes out via the spoke client interface.
         if routing_intf:
             rendered = render_template(FORTIGATE_SPOKE_ROUTING_CHECK, site)
+            display = _vdom_wrap(rendered, routing_vdom)
             started_at = clock.now()
             try:
+                if routing_vdom:
+                    shell.send(f"config vdom\nedit {routing_vdom}\n")
+                    _shell_read_until_prompt(shell, timeout=timeout or 30)
                 shell.send(rendered + "\n")
                 raw = _shell_read_until_prompt(shell, timeout=timeout or 30)
                 stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
+                if routing_vdom:
+                    shell.send("end\n")
+                    _shell_read_until_prompt(shell, timeout=timeout or 30)
                 ok = routing_via_interface(stdout, routing_intf)
                 results.append(CommandResult(
-                    template=FORTIGATE_SPOKE_ROUTING_CHECK, command=cmd_prefix + rendered,
+                    template=FORTIGATE_SPOKE_ROUTING_CHECK, command=cmd_prefix + display,
                     started_at=started_at, ended_at=clock.now(),
                     return_code=0 if ok else None, stdout=stdout, stderr="",
                     error=None if ok else (
                         f"Spoke route to hub {site.hub_ip} is not via the client interface "
-                        f"'{routing_intf}' — skipping the traffic test."),
+                        f"'{routing_intf}'{f' in VDOM {routing_vdom}' if routing_vdom else ''} "
+                        f"— skipping the traffic test."),
                 ))
                 if not ok:
                     return results
             except Exception as exc:
                 results.append(CommandResult(
-                    template=FORTIGATE_SPOKE_ROUTING_CHECK, command=cmd_prefix + rendered,
+                    template=FORTIGATE_SPOKE_ROUTING_CHECK, command=cmd_prefix + display,
                     started_at=started_at, ended_at=clock.now(),
                     return_code=None, stdout="", stderr="", error=str(exc),
                 ))
                 return results
+
+        # When the spoke uses a VDOM, run the traffictest commands in config global.
+        if enter_global:
+            shell.send("config global\n")
+            _shell_read_until_prompt(shell, timeout=timeout or 30)
 
         for i, template in enumerate(templates):
             rendered = render_template(template, site)
@@ -1585,16 +1650,21 @@ def run_fortigate_spoke_only(
     started_at = clock.now()
     # Verify the spoke routes to the hub WAN IP via its client interface before testing.
     routing_intf = None if getattr(args, "skip_routing_check", False) else site.spoke_client_intf
+    # When the spoke uses a VDOM: scope the routing check into it and run the
+    # traffictest commands in config global; otherwise run at the root prompt.
+    client_vdom = site.client_sdwan_vdom or ""
 
     if _use_paramiko:
         results = _paramiko_spoke_session(
-            site, FORTIGATE_SPOKE_COMMANDS, args.timeout, args.dry_run, routing_intf=routing_intf,
+            site, FORTIGATE_SPOKE_COMMANDS, args.timeout, args.dry_run,
+            routing_intf=routing_intf, routing_vdom=client_vdom, enter_global=bool(client_vdom),
         )
     else:
         results = []
+        global_prefix = "config global\n" if client_vdom else ""
         if routing_intf and not args.dry_run:
             rchk = _exec_ssh(
-                site, site.ip_address, FORTIGATE_SPOKE_ROUTING_CHECK,
+                site, site.ip_address, _vdom_wrap(FORTIGATE_SPOKE_ROUTING_CHECK, client_vdom),
                 args.ssh_template, args.timeout, args.dry_run,
             )
             ok = routing_via_interface(rchk.stdout, routing_intf) if not rchk.error else False
@@ -1609,7 +1679,8 @@ def run_fortigate_spoke_only(
         if not (results and results[-1].error):
             for remote_template in FORTIGATE_SPOKE_COMMANDS:
                 results.append(
-                    _exec_ssh(site, site.ip_address, remote_template, args.ssh_template, args.timeout, args.dry_run)
+                    _exec_ssh(site, site.ip_address, global_prefix + remote_template,
+                              args.ssh_template, args.timeout, args.dry_run)
                 )
 
     ended_at = clock.now()
@@ -2899,26 +2970,31 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
             routing_verdicts: dict[str, bool] = {}
             routing_results: list[CommandResult] = []
             spokes_here = hub_queues.get(hub_ip, [])
+            # When the hub uses a VDOM: scope routing checks into it and run the
+            # traffictest commands in config global; otherwise run at the root prompt.
+            server_vdom = rep_site.server_sdwan_vdom or ""
+            global_prefix = "config global\n" if server_vdom else ""
 
             if _use_paramiko:
                 if not args.skip_routing_check:
                     routing_results, routing_verdicts = _paramiko_hub_routing_check(
-                        ssh_target, spokes_here, rep_site.hub_server_intf,
+                        ssh_target, spokes_here, rep_site.hub_server_intf, server_vdom,
                         args.timeout, args.dry_run,
                     )
-                # One shell session: config global once, then all commands.
+                # One shell session; config global only when the hub uses a VDOM.
                 setup_results, server_initial, server_process = _paramiko_hub_session(
                     ssh_target, rep_site,
                     FORTIGATE_HUB_SETUP_COMMANDS, FORTIGATE_HUB_SERVER_COMMAND,
                     args.timeout, args.dry_run,
                     check_speedtest=not args.skip_speedtest_check,
+                    enter_global=bool(server_vdom),
                 )
                 connection_failed = any(r.error for r in setup_results) or (
                     server_initial is not None and server_initial.error == "Skipped — hub setup failed."
                 )
             else:
-                # Subprocess: each SSH call is a fresh session, so prepend
-                # "config global" transparently to the remote command.
+                # Subprocess: each SSH call is a fresh session, so prepend the
+                # context (config global / vdom) transparently to the remote command.
                 setup_results = []
                 connection_failed = False
 
@@ -2928,7 +3004,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                         spoke_ip = s.ip_address or ""
                         rchk = _exec_ssh(
                             rep_site, ssh_target,
-                            f"get router info routing-table details {spoke_ip}",
+                            _vdom_wrap(f"get router info routing-table details {spoke_ip}", server_vdom),
                             args.ssh_template, args.timeout, args.dry_run,
                         )
                         ok = routing_via_interface(rchk.stdout, rep_site.hub_server_intf) if not rchk.error else False
@@ -2947,7 +3023,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                     intf = render_template("{hub_server_intf}", rep_site)
                     chk = _exec_ssh(
                         rep_site, ssh_target,
-                        "config global\n" + FORTIGATE_HUB_ALLOWACCESS_CHECK,
+                        global_prefix + FORTIGATE_HUB_ALLOWACCESS_CHECK,
                         args.ssh_template, args.timeout, args.dry_run,
                     )
                     allowed = speedtest_allowed(chk.stdout) if not chk.error else None
@@ -2975,7 +3051,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                 for template in (FORTIGATE_HUB_SETUP_COMMANDS if not connection_failed else []):
                     result = _exec_ssh(
                         rep_site, ssh_target,
-                        "config global\n" + template,
+                        global_prefix + template,
                         args.ssh_template, args.timeout, args.dry_run,
                     )
                     # Report uses the clean template, not the prefixed one.
@@ -2996,7 +3072,7 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                 if not connection_failed:
                     server_initial, server_process = _exec_ssh_background(
                         rep_site, ssh_target,
-                        "config global\n" + FORTIGATE_HUB_SERVER_COMMAND,
+                        global_prefix + FORTIGATE_HUB_SERVER_COMMAND,
                         args.ssh_template, args.dry_run,
                     )
                     if server_initial is not None:

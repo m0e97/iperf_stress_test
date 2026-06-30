@@ -205,6 +205,82 @@ def test_speedtest_allowed_token_variants():
     assert engine.speedtest_allowed("set allowaccess ping https") is False
 
 
+# --- routing pre-flight check --------------------------------------------
+
+def test_routing_via_interface_match():
+    out = "Routing entry for 10.255.0.1/32\n  * 10.0.0.1, via Mobily"
+    assert engine.routing_via_interface(out, "Mobily") is True
+    assert engine.routing_via_interface(out, "wan1") is False
+
+
+def test_routing_via_interface_empty_is_false():
+    assert engine.routing_via_interface("", "Mobily") is False
+    assert engine.routing_via_interface("routing table is empty", "Mobily") is False
+    assert engine.routing_via_interface("* via Mobily", "") is False
+
+
+def test_routing_via_interface_word_boundary():
+    # 'wan1' must not match inside 'wan10'
+    assert engine.routing_via_interface("* via wan10", "wan1") is False
+    assert engine.routing_via_interface("* via wan1", "wan1") is True
+
+
+def _fake_shell_factory(monkeypatch, responder):
+    sent = []
+
+    class _Shell:
+        def send(self, s): sent.append(s)
+        def close(self): pass
+        def settimeout(self, *a): pass
+
+    monkeypatch.setattr(engine, "_paramiko_connect", lambda *a, **k: type("C", (), {"close": lambda s: None})())
+    monkeypatch.setattr(engine, "_paramiko_open_shell", lambda *a, **k: _Shell())
+    monkeypatch.setattr(engine, "_shell_read_until_prompt", lambda shell, timeout=None: responder(sent))
+    return sent
+
+
+def test_hub_routing_check_verdicts(monkeypatch):
+    def responder(sent):
+        last = sent[-1] if sent else ""
+        if "10.0.0.1" in last:
+            return "* 10.0.0.1, via Mobily"
+        if "10.0.0.2" in last:
+            return "* 10.0.0.2, via wan1"
+        return ""
+    _fake_shell_factory(monkeypatch, responder)
+    s1 = engine.build_sites([{"spoke_ip": "10.0.0.1", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
+    s2 = engine.build_sites([{"spoke_ip": "10.0.0.2", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
+    results, verdicts = engine._paramiko_hub_routing_check("10.255.0.1", [s1, s2], "Mobily", timeout=10, dry_run=False)
+    assert verdicts == {"10.0.0.1": True, "10.0.0.2": False}
+    assert any(r.error for r in results)            # the failed spoke is flagged
+
+
+def test_spoke_routing_gate_skips_test_when_wrong_interface(monkeypatch):
+    def responder(sent):
+        last = sent[-1] if sent else ""
+        if "routing-table details" in last:
+            return "* 10.255.0.1, via wan1"        # NOT the expected wan2
+        return "iperf3 done"
+    _fake_shell_factory(monkeypatch, responder)
+    site = engine.build_sites([{"spoke_ip": "10.0.0.9", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
+    site.placeholders.update({"spoke_client_intf": "wan2", "traffictest_port": "5201", "duration_flag": ""})
+    res = engine._paramiko_spoke_session(site, engine.FORTIGATE_SPOKE_COMMANDS, 10, False, routing_intf="wan2")
+    assert len(res) == 1 and res[0].error          # only the routing check ran; test skipped
+
+
+def test_spoke_routing_gate_proceeds_when_correct(monkeypatch):
+    def responder(sent):
+        last = sent[-1] if sent else ""
+        if "routing-table details" in last:
+            return "* 10.255.0.1, via wan2"
+        return "iperf3 done 95 Mbits/sec sender"
+    _fake_shell_factory(monkeypatch, responder)
+    site = engine.build_sites([{"spoke_ip": "10.0.0.9", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
+    site.placeholders.update({"spoke_client_intf": "wan2", "traffictest_port": "5201", "duration_flag": ""})
+    res = engine._paramiko_spoke_session(site, engine.FORTIGATE_SPOKE_COMMANDS, 10, False, routing_intf="wan2")
+    assert len(res) == len(engine.FORTIGATE_SPOKE_COMMANDS) + 1   # routing check + all spoke commands
+
+
 def test_hub_session_dry_run_includes_speedtest_check():
     site = engine.build_sites([{"spoke_ip": "10.0.0.1", "hub_ip": "10.0.0.254", "speed": "100M"}])[0]
     site.placeholders["hub_server_intf"] = "Mobily"

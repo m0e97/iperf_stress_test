@@ -71,6 +71,11 @@ FORTIGATE_HUB_SERVER_COMMAND = "diagnose traffictest run -s"
 # Pre-flight: confirm the hub server interface permits speed-test before we start
 # the traffictest server on it (otherwise every spoke against this hub would fail).
 FORTIGATE_HUB_ALLOWACCESS_CHECK = "show system interface {hub_server_intf}"
+# Pre-flight routing checks. On the hub we confirm each spoke IP routes out via the
+# server interface; on the spoke we confirm the hub WAN IP routes out via the client
+# interface. The routing-table detail output names the egress interface when correct.
+FORTIGATE_HUB_ROUTING_CHECK = "get router info routing-table details {spoke_ip}"
+FORTIGATE_SPOKE_ROUTING_CHECK = "get router info routing-table details {hub_ip}"
 FORTIGATE_SPOKE_COMMANDS = [
     "diagnose traffictest client-intf {spoke_client_intf}",
     "diagnose traffictest port {traffictest_port}",
@@ -118,6 +123,19 @@ def speedtest_allowed(show_output: str) -> bool | None:
     if not match:
         return None
     return bool(_SPEEDTEST_TOKEN_RE.search(match.group("services")))
+
+
+def routing_via_interface(routing_output: str, interface: str) -> bool:
+    """Whether `get router info routing-table details <ip>` resolves via `interface`.
+
+    FortiGate names the egress interface in the resolved route line(s) (e.g.
+    ``* 10.255.0.1, via Mobily`` or ``directly connected, wan2``). Returns True only
+    when that interface name appears; empty / "no route" / error output is False so
+    an unroutable destination is treated as a failed check.
+    """
+    if not routing_output or not interface:
+        return False
+    return bool(re.search(r"\b" + re.escape(interface.strip()) + r"\b", routing_output))
 FIREWALL_NAME_PATTERNS = [
     re.compile(r"^\s*hostname\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*system\s+name\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
@@ -1029,6 +1047,83 @@ def _paramiko_start_background(
     )
 
 
+def _paramiko_hub_routing_check(
+    ssh_target: str,
+    spoke_sites: list[SiteDefinition],
+    server_intf: str,
+    timeout: int | None,
+    dry_run: bool,
+) -> tuple[list[CommandResult], dict[str, bool]]:
+    """On the hub, confirm each spoke IP routes out via the server interface.
+
+    Runs ``get router info routing-table details <spoke_ip>`` at the root prompt
+    (before ``config global``) for every spoke that will test against this hub.
+    Returns (per-spoke CommandResults, {spoke_ip: routing_ok}).
+    """
+    cmd_prefix = f"[paramiko] {_paramiko_user}@{ssh_target}: "
+    results: list[CommandResult] = []
+    verdicts: dict[str, bool] = {}
+
+    if dry_run:
+        now = clock.now()
+        for site in spoke_sites:
+            spoke_ip = site.ip_address or ""
+            results.append(CommandResult(
+                template=FORTIGATE_HUB_ROUTING_CHECK,
+                command=cmd_prefix + f"get router info routing-table details {spoke_ip}",
+                started_at=now, ended_at=now, return_code=0,
+                stdout="dry-run: routing check not executed", stderr="",
+            ))
+            verdicts[spoke_ip] = True
+        return results, verdicts
+
+    try:
+        client = _paramiko_connect(ssh_target, timeout)
+        shell = _paramiko_open_shell(client, timeout)
+    except Exception as exc:
+        now = clock.now()
+        results.append(CommandResult(
+            template=FORTIGATE_HUB_ROUTING_CHECK, command=cmd_prefix + "(connect)",
+            started_at=now, ended_at=now, return_code=None, stdout="", stderr="", error=str(exc),
+        ))
+        for site in spoke_sites:
+            verdicts[site.ip_address or ""] = False
+        return results, verdicts
+
+    try:
+        for site in spoke_sites:
+            spoke_ip = site.ip_address or ""
+            cmd = f"get router info routing-table details {spoke_ip}"
+            started_at = clock.now()
+            try:
+                shell.send(cmd + "\n")
+                raw = _shell_read_until_prompt(shell, timeout=timeout or 30)
+                stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
+                ok = routing_via_interface(stdout, server_intf)
+                verdicts[spoke_ip] = ok
+                results.append(CommandResult(
+                    template=FORTIGATE_HUB_ROUTING_CHECK, command=cmd_prefix + cmd,
+                    started_at=started_at, ended_at=clock.now(),
+                    return_code=0 if ok else None, stdout=stdout, stderr="",
+                    error=None if ok else (
+                        f"Spoke {spoke_ip} does not route via the hub server interface "
+                        f"'{server_intf}' — skipping this spoke."),
+                ))
+            except Exception as exc:
+                verdicts[spoke_ip] = False
+                results.append(CommandResult(
+                    template=FORTIGATE_HUB_ROUTING_CHECK, command=cmd_prefix + cmd,
+                    started_at=started_at, ended_at=clock.now(),
+                    return_code=None, stdout="", stderr="", error=str(exc),
+                ))
+    finally:
+        try:
+            shell.close(); client.close()
+        except Exception:
+            pass
+    return results, verdicts
+
+
 def _paramiko_hub_session(
     ssh_target: str,
     rep_site: SiteDefinition,
@@ -1224,14 +1319,27 @@ def _paramiko_spoke_session(
     templates: list[str],
     timeout: int | None,
     dry_run: bool,
+    routing_intf: str | None = None,
 ) -> list[CommandResult]:
-    """Run all spoke commands in one Paramiko shell so per-session settings persist."""
+    """Run all spoke commands in one Paramiko shell so per-session settings persist.
+
+    When ``routing_intf`` is given, first verify the hub WAN IP routes out via that
+    client interface; if it does not, record the failed check and skip the test.
+    """
     host = site.ip_address
     cmd_prefix = f"[paramiko] {_paramiko_user}@{host}: "
 
     if dry_run:
         now = clock.now()
-        return [
+        results = []
+        if routing_intf:
+            results.append(CommandResult(
+                template=FORTIGATE_SPOKE_ROUTING_CHECK,
+                command=cmd_prefix + render_template(FORTIGATE_SPOKE_ROUTING_CHECK, site),
+                started_at=now, ended_at=now,
+                return_code=0, stdout="dry-run: routing check not executed", stderr="",
+            ))
+        return results + [
             CommandResult(
                 template=t, command=cmd_prefix + render_template(t, site),
                 started_at=now, ended_at=now,
@@ -1254,6 +1362,33 @@ def _paramiko_spoke_session(
 
     results: list[CommandResult] = []
     try:
+        # Pre-flight: confirm the hub WAN IP routes out via the spoke client interface.
+        if routing_intf:
+            rendered = render_template(FORTIGATE_SPOKE_ROUTING_CHECK, site)
+            started_at = clock.now()
+            try:
+                shell.send(rendered + "\n")
+                raw = _shell_read_until_prompt(shell, timeout=timeout or 30)
+                stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
+                ok = routing_via_interface(stdout, routing_intf)
+                results.append(CommandResult(
+                    template=FORTIGATE_SPOKE_ROUTING_CHECK, command=cmd_prefix + rendered,
+                    started_at=started_at, ended_at=clock.now(),
+                    return_code=0 if ok else None, stdout=stdout, stderr="",
+                    error=None if ok else (
+                        f"Spoke route to hub {site.hub_ip} is not via the client interface "
+                        f"'{routing_intf}' — skipping the traffic test."),
+                ))
+                if not ok:
+                    return results
+            except Exception as exc:
+                results.append(CommandResult(
+                    template=FORTIGATE_SPOKE_ROUTING_CHECK, command=cmd_prefix + rendered,
+                    started_at=started_at, ended_at=clock.now(),
+                    return_code=None, stdout="", stderr="", error=str(exc),
+                ))
+                return results
+
         for i, template in enumerate(templates):
             rendered = render_template(template, site)
             cmd_label = cmd_prefix + rendered
@@ -1448,15 +1583,34 @@ def run_fortigate_spoke_only(
     name_discovery_result: CommandResult | None = None,
 ) -> SiteRun:
     started_at = clock.now()
+    # Verify the spoke routes to the hub WAN IP via its client interface before testing.
+    routing_intf = None if getattr(args, "skip_routing_check", False) else site.spoke_client_intf
 
     if _use_paramiko:
-        results = _paramiko_spoke_session(site, FORTIGATE_SPOKE_COMMANDS, args.timeout, args.dry_run)
+        results = _paramiko_spoke_session(
+            site, FORTIGATE_SPOKE_COMMANDS, args.timeout, args.dry_run, routing_intf=routing_intf,
+        )
     else:
         results = []
-        for remote_template in FORTIGATE_SPOKE_COMMANDS:
-            results.append(
-                _exec_ssh(site, site.ip_address, remote_template, args.ssh_template, args.timeout, args.dry_run)
+        if routing_intf and not args.dry_run:
+            rchk = _exec_ssh(
+                site, site.ip_address, FORTIGATE_SPOKE_ROUTING_CHECK,
+                args.ssh_template, args.timeout, args.dry_run,
             )
+            ok = routing_via_interface(rchk.stdout, routing_intf) if not rchk.error else False
+            results.append(CommandResult(
+                template=FORTIGATE_SPOKE_ROUTING_CHECK, command=rchk.command,
+                started_at=rchk.started_at, ended_at=rchk.ended_at,
+                return_code=rchk.return_code, stdout=rchk.stdout, stderr=rchk.stderr,
+                error=rchk.error or (None if ok else
+                    f"Spoke route to hub {site.hub_ip} is not via the client interface "
+                    f"'{routing_intf}' — skipping the traffic test."),
+            ))
+        if not (results and results[-1].error):
+            for remote_template in FORTIGATE_SPOKE_COMMANDS:
+                results.append(
+                    _exec_ssh(site, site.ip_address, remote_template, args.ssh_template, args.timeout, args.dry_run)
+                )
 
     ended_at = clock.now()
     return SiteRun(
@@ -2201,6 +2355,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--skip-routing-check",
+        action="store_true",
+        help=(
+            "Skip the pre-flight routing checks: on the hub that each spoke IP routes "
+            "via the server interface (failed spokes are skipped before the server "
+            "starts), and on the spoke that the hub WAN IP routes via the client interface."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Render commands and report without executing the traffic tests.",
@@ -2730,8 +2893,19 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
 
         def _setup_one_hub(hub_ip: str, rep_site: SiteDefinition) -> None:
             ssh_target = rep_site.hub_mgmt_ip or hub_ip
+            # Per-spoke routing verdicts for this hub ({spoke_ip: ok}). Failed spokes
+            # are skipped in their queue; this is kept out of the hub-level
+            # connection_failed so one bad route doesn't fail the whole hub.
+            routing_verdicts: dict[str, bool] = {}
+            routing_results: list[CommandResult] = []
+            spokes_here = hub_queues.get(hub_ip, [])
 
             if _use_paramiko:
+                if not args.skip_routing_check:
+                    routing_results, routing_verdicts = _paramiko_hub_routing_check(
+                        ssh_target, spokes_here, rep_site.hub_server_intf,
+                        args.timeout, args.dry_run,
+                    )
                 # One shell session: config global once, then all commands.
                 setup_results, server_initial, server_process = _paramiko_hub_session(
                     ssh_target, rep_site,
@@ -2747,6 +2921,26 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                 # "config global" transparently to the remote command.
                 setup_results = []
                 connection_failed = False
+
+                # Pre-flight: per-spoke routing via the hub server interface.
+                if not args.skip_routing_check and not args.dry_run:
+                    for s in spokes_here:
+                        spoke_ip = s.ip_address or ""
+                        rchk = _exec_ssh(
+                            rep_site, ssh_target,
+                            f"get router info routing-table details {spoke_ip}",
+                            args.ssh_template, args.timeout, args.dry_run,
+                        )
+                        ok = routing_via_interface(rchk.stdout, rep_site.hub_server_intf) if not rchk.error else False
+                        routing_verdicts[spoke_ip] = ok
+                        routing_results.append(CommandResult(
+                            template=FORTIGATE_HUB_ROUTING_CHECK, command=rchk.command,
+                            started_at=rchk.started_at, ended_at=rchk.ended_at,
+                            return_code=rchk.return_code, stdout=rchk.stdout, stderr=rchk.stderr,
+                            error=rchk.error or (None if ok else
+                                f"Spoke {spoke_ip} does not route via the hub server interface "
+                                f"'{rep_site.hub_server_intf}' — skipping this spoke."),
+                        ))
 
                 # Pre-flight: verify speed-test is permitted on the hub server interface.
                 if not args.skip_speedtest_check and not args.dry_run:
@@ -2841,6 +3035,8 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                     "server_process": server_process,
                     "failed": connection_failed,
                     "hub_name": hub_discovered_name,
+                    "routing": routing_verdicts,
+                    "routing_results": routing_results,
                 }
 
         if not args.skip_hub_setup:
@@ -2955,6 +3151,35 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
                             flush=True,
                         )
                     break
+
+                # Skip spokes the hub couldn't route to via the server interface.
+                if not args.skip_routing_check and not args.dry_run and \
+                        ctx.get("routing", {}).get(site.ip_address) is False:
+                    with print_lock:
+                        print(
+                            f"  [Hub {hub_ip}] [{q_index}/{queue_size}] Skipping spoke"
+                            f" '{site.ip_address or 'no-ip'}' — no hub route via server"
+                            f" interface '{site.hub_server_intf}'.",
+                            flush=True,
+                        )
+                    now = clock.now()
+                    rr = next((r for r in ctx.get("routing_results", [])
+                               if site.ip_address and site.ip_address in (r.command or "")), None)
+                    routing_cmd = CommandResult(
+                        template=FORTIGATE_HUB_ROUTING_CHECK,
+                        command=(rr.command if rr else f"get router info routing-table details {site.ip_address}"),
+                        started_at=now, ended_at=now, return_code=None,
+                        stdout=(rr.stdout if rr else ""), stderr="",
+                        error=(f"Hub has no route to spoke {site.ip_address} via server "
+                               f"interface '{site.hub_server_intf}'."),
+                    )
+                    site_run = SiteRun(site=site, started_at=now, ended_at=now,
+                                       command_results=[routing_cmd])
+                    with all_runs_lock:
+                        all_runs.append(site_run)
+                    _emit_progress(f"Skipped '{site.display_name}' (hub routing failed)")
+                    continue
+
                 with print_lock:
                     print(
                         f"  [Hub {hub_ip}] [{q_index}/{queue_size}] Discovering name"

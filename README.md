@@ -28,8 +28,9 @@ When you do not pass `--command` or `--command-file`, the script uses the built-
 Hub commands run once per hub before any spoke tests, all within a single SSH session. `config global` is entered once at login before any commands run:
 
 ```text
+get router info routing-table details {spoke_ip}   ← pre-flight: route to each spoke via server_intf
 config global
-show system interface {hub_server_intf}      ← pre-flight: speed-test allowaccess check
+show system interface {hub_server_intf}            ← pre-flight: speed-test allowaccess check
 diagnose traffictest server-intf {hub_server_intf}
 diagnose traffictest port {traffictest_port}
 diagnose traffictest run -s
@@ -44,9 +45,17 @@ Enable it on the hub:  config system interface / edit Mobily / append allowacces
 
 If the `allowaccess` line can't be read the run proceeds (the gate fails open). Pass `--skip-speedtest-check` to disable the check entirely.
 
+**Pre-flight routing checks.** Before any traffic test, the script also verifies routing on **both** sides with `get router info routing-table details <destination_ip>` and checks that the resolved route egresses the expected interface:
+
+- **Hub side** — for **every spoke** assigned to a hub, the hub checks `get router info routing-table details <spoke_ip>` and confirms the route is via the **server interface** (`server_intf`). This runs **before the traffictest server is started**. Any spoke that fails is **skipped** (the others still run); the spoke is reported as failed with the routing reason.
+- **Spoke side** — each spoke checks `get router info routing-table details <hub_wan_ip>` and confirms the route is via its **client interface** (`spoke_client_intf`) — i.e. it will use that interface to reach the hub during the test. If it doesn't, the spoke **skips its test** rather than testing over the wrong path.
+
+A destination whose route does not name the expected interface (or has no route) **fails** the check. Pass `--skip-routing-check` to disable both routing checks. Like the speed-test check, these are **read-only** (`get …`) — they never modify the device configuration.
+
 Spoke commands run for each spoke in its hub queue, all within a single SSH session per spoke:
 
 ```text
+get router info routing-table details {hub_ip}    ← pre-flight: route to hub via client_intf
 diagnose traffictest client-intf {spoke_client_intf}
 diagnose traffictest port {traffictest_port}
 diagnose traffictest run -b {speed_with_margin} -c {hub_ip}{duration_flag}
@@ -328,6 +337,7 @@ ssh admin@{spoke_ip} "get router info routing-table all"
 | `--paramiko` | Use Paramiko (pure-Python SSH) instead of external `ssh`/`sshpass` executables. Default on Windows |
 | `--skip-hub-setup` | Skip all hub SSH commands; assumes the hub traffictest server is already running |
 | `--skip-speedtest-check` | Skip the pre-flight check that verifies the hub server interface permits `speed-test` in its `allowaccess` before starting the server |
+| `--skip-routing-check` | Skip the pre-flight routing checks (hub→spoke via `server_intf`, spoke→hub via `client_intf`) |
 | `--ssh-template` | SSH wrapper for built-in hub/spoke traffictest commands (Linux/macOS only) |
 | `--hub-server-intf` | Hub interface for `server-intf`, default `Mobily` |
 | `--spoke-client-intf` | Spoke interface for `client-intf`, default `wan1` |

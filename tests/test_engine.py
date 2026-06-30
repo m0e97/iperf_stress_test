@@ -281,6 +281,40 @@ def test_spoke_routing_gate_proceeds_when_correct(monkeypatch):
     assert len(res) == len(engine.FORTIGATE_SPOKE_COMMANDS) + 1   # routing check + all spoke commands
 
 
+# --- device field validation (injection guard) ---------------------------
+
+def test_validate_fields_clean_site_ok():
+    site = engine.build_sites([{
+        "spoke_ip": "10.0.0.1", "hub_ip": "10.255.0.1", "speed": "100M",
+        "server_intf": "Mobily", "client_intf": "wan2",
+        "server_sdwan_vdom": "HUB-VD", "client_sdwan_vdom": "SPOKE_VD",
+    }])[0]
+    assert engine.validate_site_command_fields(site) == []
+
+
+def test_validate_fields_flags_injection():
+    # newline in a VDOM name (FortiGate command injection) and shell metachars
+    site = engine.build_sites([{
+        "spoke_ip": "10.0.0.1", "hub_ip": "10.255.0.1", "speed": "100M",
+        "client_sdwan_vdom": "X\nexecute reboot",
+        "server_intf": "wan2; rm -rf /",
+    }])[0]
+    issues = engine.validate_site_command_fields(site)
+    assert any("client_sdwan_vdom" in i for i in issues)
+    assert any("server_intf" in i for i in issues)
+
+
+def test_validate_fields_requires_spoke_ip():
+    site = engine.build_sites([{"hub_ip": "10.255.0.1", "speed": "100M"}])[0]
+    assert any("spoke_ip" in i for i in engine.validate_site_command_fields(site))
+
+
+def test_validate_fields_blocks_space_and_quotes():
+    site = engine.build_sites([{"spoke_ip": "10.0.0.1", "hub_ip": "10.255.0.1",
+                                "speed": "100M", "server_intf": 'a" b'}])[0]
+    assert any("server_intf" in i for i in engine.validate_site_command_fields(site))
+
+
 # --- SD-WAN VDOM scoping --------------------------------------------------
 
 class _FakeChannel:

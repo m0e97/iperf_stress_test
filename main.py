@@ -494,6 +494,42 @@ def format_mbps_for_traffictest(speed_mbps: float | None) -> str:
     return f"{rounded:g}M"
 
 
+# Values that are interpolated into commands sent to the device shell must not
+# contain whitespace, newlines, or shell/CLI metacharacters — otherwise a crafted
+# device field could inject extra FortiGate commands (over Paramiko) or, on the
+# non-Paramiko subprocess path, break out of the local `shell=True` command.
+_SAFE_FIELD_RE = re.compile(r"^[A-Za-z0-9._:\-]+$")
+
+
+def validate_site_command_fields(site: "SiteDefinition") -> list[str]:
+    """Return a list of problems for site values that get sent to the device shell.
+
+    Empty optional values are allowed; non-empty values must match a strict safe
+    charset (alphanumerics and ``. _ : -``), which blocks command injection.
+    """
+    issues: list[str] = []
+
+    def check(label: str, value: str, required: bool = False) -> None:
+        v = (value or "").strip()
+        if not v:
+            if required:
+                issues.append(f"row {site.index}: {label} is required")
+            return
+        if not _SAFE_FIELD_RE.match(v):
+            issues.append(f"row {site.index}: {label} '{value}' contains unsupported characters")
+
+    check("spoke_ip", site.ip_address, required=True)
+    check("hub_ip", site.hub_ip)
+    check("hub_mgmt_ip", site.hub_mgmt_ip)
+    check("server_intf", site.hub_server_intf)
+    check("client_intf", site.spoke_client_intf)
+    check("server_sdwan_vdom", site.server_sdwan_vdom)
+    check("client_sdwan_vdom", site.client_sdwan_vdom)
+    check("traffictest_port", site.traffictest_port)
+    check("traffictest_duration", site.traffictest_duration)
+    return issues
+
+
 def _sanitize_duration(value) -> str:
     """Return a positive-integer seconds string, or "" when absent/invalid."""
     try:
@@ -701,6 +737,11 @@ def parse_firewall_name(output: str) -> str | None:
 
 
 def run_command(command: str, timeout: int | None, dry_run: bool) -> CommandResult:
+    # NOTE: shell=True is used so the configurable ssh/plink template (with its
+    # quoting) is honoured. Injection is prevented upstream: every device value
+    # interpolated into `command` is screened by validate_site_command_fields()
+    # (no whitespace or shell metacharacters), and the web app always runs with
+    # --paramiko, which never reaches this subprocess path.
     started_at = clock.now()
     if dry_run:
         ended_at = clock.now()
@@ -2903,6 +2944,17 @@ def _run_tests(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         site.placeholders["traffictest_duration"] = site.traffictest_duration
         site.placeholders["duration_flag"] = (
             f" -t {site.traffictest_duration}" if site.traffictest_duration else ""
+        )
+
+    # Reject unsafe device values before any command is built or sent (injection guard).
+    field_issues: list[str] = []
+    for site in sites:
+        field_issues.extend(validate_site_command_fields(site))
+    if field_issues:
+        parser.error(
+            "Refusing to run — unsafe characters in device fields "
+            "(only letters, digits, and . _ : - are allowed):\n  "
+            + "\n  ".join(field_issues)
         )
 
     command_templates = load_command_templates(args)

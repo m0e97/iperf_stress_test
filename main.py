@@ -128,14 +128,16 @@ def speedtest_allowed(show_output: str) -> bool | None:
 def routing_via_interface(routing_output: str, interface: str) -> bool:
     """Whether `get router info routing-table details <ip>` resolves via `interface`.
 
-    FortiGate names the egress interface in the resolved route line(s) (e.g.
-    ``* 10.255.0.1, via Mobily`` or ``directly connected, wan2``). Returns True only
-    when that interface name appears; empty / "no route" / error output is False so
-    an unroutable destination is treated as a failed check.
+    FortiGate names the egress interface on the resolved route line, after ``via``
+    or ``connected,`` — e.g. ``* 10.255.0.1, via Mobily`` or
+    ``* directly connected, wan2``. We require the interface to appear in that
+    position (not merely anywhere in the output), so an unrelated mention can't
+    pass the check. Empty / "no route" / error output is False.
     """
     if not routing_output or not interface:
         return False
-    return bool(re.search(r"\b" + re.escape(interface.strip()) + r"\b", routing_output))
+    pat = r"(?:via|connected,?)\s+" + re.escape(interface.strip()) + r"\b"
+    return bool(re.search(pat, routing_output, re.IGNORECASE))
 FIREWALL_NAME_PATTERNS = [
     re.compile(r"^\s*hostname\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),
     re.compile(r"^\s*system\s+name\s*[:=]\s*(?P<name>.+?)\s*$", re.IGNORECASE),

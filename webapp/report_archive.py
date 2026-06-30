@@ -19,12 +19,24 @@ def _reports_dir() -> Path:
     return d
 
 
+def _safe_path(filename: str) -> Path:
+    """Resolve a report filename under the reports dir, rejecting path traversal.
+
+    Defense-in-depth: filenames are currently server-generated, but guard against
+    any future caller passing a value containing ``/`` or ``..``.
+    """
+    name = (filename or "").strip()
+    if not name or name != Path(name).name or name in (".", ".."):
+        raise ValueError(f"Unsafe report filename: {filename!r}")
+    return _reports_dir() / name
+
+
 def push_bytes(filename: str, data: bytes) -> None:
-    (_reports_dir() / filename).write_bytes(data)
+    _safe_path(filename).write_bytes(data)
 
 
 def fetch_bytes(filename: str) -> bytes:
-    return (_reports_dir() / filename).read_bytes()
+    return _safe_path(filename).read_bytes()
 
 
 def list_files() -> list[str]:
@@ -33,7 +45,10 @@ def list_files() -> list[str]:
 
 
 def exists(filename: str) -> bool:
-    return (_reports_dir() / filename).exists()
+    try:
+        return _safe_path(filename).exists()
+    except ValueError:
+        return False
 
 
 def ping() -> tuple[bool, str]:

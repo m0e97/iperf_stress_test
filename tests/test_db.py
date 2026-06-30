@@ -187,3 +187,20 @@ def test_mark_schedule_fired_updates_status(fresh_db):
     assert sched["last_run_status"] == "fired"
     assert sched["last_run_id"] == "run-1"
     assert sched["next_run_at"] == "2026-06-19T02:00:00"
+
+
+def test_report_archive_rejects_path_traversal(fresh_db):
+    """report_archive must reject filenames with path separators / traversal."""
+    import pytest
+    from webapp import report_archive
+
+    report_archive.push_bytes("ok.json", b"{}")
+    assert report_archive.fetch_bytes("ok.json") == b"{}"
+    assert report_archive.exists("ok.json") is True
+
+    for bad in ("../evil.json", "a/b.json", "..", "", "/etc/passwd"):
+        with pytest.raises(ValueError):
+            report_archive.fetch_bytes(bad)
+        with pytest.raises(ValueError):
+            report_archive.push_bytes(bad, b"x")
+        assert report_archive.exists(bad) is False

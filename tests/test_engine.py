@@ -225,6 +225,13 @@ def test_routing_via_interface_word_boundary():
     assert engine.routing_via_interface("* via wan1", "wan1") is True
 
 
+def test_routing_via_interface_requires_egress_position():
+    # interface name present but NOT as the egress (after via/connected) -> False
+    assert engine.routing_via_interface("# Mobily uplink note\n* 10.0.0.1, via wan1", "Mobily") is False
+    # directly-connected form is accepted
+    assert engine.routing_via_interface("* directly connected, wan2", "wan2") is True
+
+
 def _fake_shell_factory(monkeypatch, responder):
     sent = []
 

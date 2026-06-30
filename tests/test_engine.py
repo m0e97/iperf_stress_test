@@ -283,6 +283,71 @@ def test_spoke_routing_gate_proceeds_when_correct(monkeypatch):
 
 # --- SD-WAN VDOM scoping --------------------------------------------------
 
+class _FakeChannel:
+    """Minimal FortiGate-like channel that delivers one prompt-terminated unit per
+    recv() (simulating per-command flushing). Exercises the REAL prompt reader so
+    the multi-command desync is reproducible — unlike mocking the reader.
+    """
+
+    def __init__(self):
+        self._units: list[bytes] = []
+        self.sent: list[str] = []
+
+    def send(self, data):
+        self.sent.append(data)
+        for line in data.splitlines():
+            line = line.strip()
+            if line:
+                self._units.append(self._unit(line))
+
+    def _unit(self, line):
+        if line == "config vdom":
+            return b"\n(vdom) # "
+        if line.startswith("edit "):
+            return f"\n({line.split(None, 1)[1]}) # ".encode()
+        if line == "end":
+            return b"\nFGT # "
+        if "routing-table details" in line:
+            ip = line.rsplit(None, 1)[-1]
+            return f"\nRouting entry for {ip}/32\n  * 10.0.0.1, via Mobily\nFGT # ".encode()
+        return b"\nFGT # "
+
+    def recv_ready(self):
+        return bool(self._units)
+
+    def recv(self, n):
+        return self._units.pop(0) if self._units else b""
+
+    def settimeout(self, *a):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_hub_routing_vdom_reads_correct_output_real_reader(monkeypatch):
+    """Regression for the VDOM desync: with the real reader and fragmented recv,
+    the routing GET must read its own output, not the leftover 'edit' prompt."""
+    ch = _FakeChannel()
+    monkeypatch.setattr(engine, "_paramiko_connect", lambda *a, **k: type("C", (), {"close": lambda s: None})())
+    monkeypatch.setattr(engine, "_paramiko_open_shell", lambda *a, **k: ch)
+    s1 = engine.build_sites([{"spoke_ip": "10.0.0.1", "hub_ip": "10.255.0.1", "speed": "100M"}])[0]
+    results, verdicts = engine._paramiko_hub_routing_check(
+        "10.255.0.1", [s1], "Mobily", "HUB-VD", timeout=5, dry_run=False)
+    assert verdicts == {"10.0.0.1": True}
+    assert "via Mobily" in results[0].stdout          # captured the GET output, not 'edit'
+    assert "edit HUB-VD" in "".join(ch.sent)          # vdom was entered
+
+
+def test_shell_enter_vdom_consumes_both_prompts(monkeypatch):
+    ch = _FakeChannel()
+    engine._shell_enter_vdom(ch, "SDWAN", timeout=5)
+    # After entering, the next read must see fresh GET output (no leftover prompt).
+    ch.send("get router info routing-table details 1.1.1.1")
+    out = engine._shell_read_until_prompt(ch, timeout=5)
+    assert "Routing entry" in out and "via Mobily" in out
+
+
 def test_vdom_wrap():
     assert engine._vdom_wrap("get x", "SDWAN") == "config vdom\nedit SDWAN\nget x\nend"
     assert engine._vdom_wrap("get x", "") == "get x"

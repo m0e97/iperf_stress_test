@@ -951,6 +951,25 @@ def _shell_read_until_prompt(shell: Any, timeout: float | None) -> str:
     return output
 
 
+def _shell_enter_vdom(shell: Any, vdom: str, timeout: float | None) -> None:
+    """Enter a VDOM config context one command at a time.
+
+    Each command is sent and its prompt consumed separately — sending
+    ``config vdom`` and ``edit <vdom>`` in a single write would let the read
+    return on the first prompt and desync every subsequent command's output.
+    """
+    shell.send("config vdom\n")
+    _shell_read_until_prompt(shell, timeout=timeout)
+    shell.send(f"edit {vdom}\n")
+    _shell_read_until_prompt(shell, timeout=timeout)
+
+
+def _shell_end_config(shell: Any, timeout: float | None) -> None:
+    """Leave a config context (``end``), consuming its prompt."""
+    shell.send("end\n")
+    _shell_read_until_prompt(shell, timeout=timeout)
+
+
 def _paramiko_open_shell(client: Any, timeout: int | None) -> Any:
     """Open an interactive FortiGate shell and accept the post-logon banner if present."""
     shell = client.invoke_shell(width=220, height=50)
@@ -1123,8 +1142,7 @@ def _paramiko_hub_routing_check(
 
     try:
         if vdom:
-            shell.send(f"config vdom\nedit {vdom}\n")
-            _shell_read_until_prompt(shell, timeout=timeout or 30)
+            _shell_enter_vdom(shell, vdom, timeout or 30)
         for site in spoke_sites:
             spoke_ip = site.ip_address or ""
             cmd = f"get router info routing-table details {spoke_ip}"
@@ -1153,8 +1171,7 @@ def _paramiko_hub_routing_check(
                 ))
         if vdom:
             try:
-                shell.send("end\n")
-                _shell_read_until_prompt(shell, timeout=timeout or 30)
+                _shell_end_config(shell, timeout or 30)
             except Exception:
                 pass
     finally:
@@ -1421,14 +1438,12 @@ def _paramiko_spoke_session(
             started_at = clock.now()
             try:
                 if routing_vdom:
-                    shell.send(f"config vdom\nedit {routing_vdom}\n")
-                    _shell_read_until_prompt(shell, timeout=timeout or 30)
+                    _shell_enter_vdom(shell, routing_vdom, timeout or 30)
                 shell.send(rendered + "\n")
                 raw = _shell_read_until_prompt(shell, timeout=timeout or 30)
                 stdout = ANSI_ESCAPE_PATTERN.sub("", raw)
                 if routing_vdom:
-                    shell.send("end\n")
-                    _shell_read_until_prompt(shell, timeout=timeout or 30)
+                    _shell_end_config(shell, timeout or 30)
                 ok = routing_via_interface(stdout, routing_intf)
                 results.append(CommandResult(
                     template=FORTIGATE_SPOKE_ROUTING_CHECK, command=cmd_prefix + display,
